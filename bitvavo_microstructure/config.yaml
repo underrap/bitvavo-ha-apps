@@ -1,0 +1,12 @@
+name: "Bitvavo Microstructure Collector"
+version: "2.0.0"
+slug: "bitvavo_microstructure"
+description: "Prospectieve BTC/EUR versus BTC/USDC microstructure research"
+arch:
+  - aarch64
+startup: application
+boot: auto
+init: false
+map:
+  - type: homeassistant_config
+    read_only: false
