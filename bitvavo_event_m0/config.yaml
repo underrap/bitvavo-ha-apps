@@ -1,0 +1,12 @@
+name: "Bitvavo Event-Level Research M0"
+version: "1.0.0"
+slug: "bitvavo_event_m0"
+description: "Public event-level BTC/EUR and BTC/USDC research collector; no trading"
+arch:
+  - aarch64
+startup: application
+boot: auto
+init: false
+map:
+  - type: homeassistant_config
+    read_only: false
