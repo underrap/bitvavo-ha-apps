@@ -249,10 +249,35 @@ def main():
  for m in MARKETS:series[m]=build_series(root,m,audit);results['audit']['markets'][m]=dict(audit[m]);results['markets'][m]=analyze_market(series[m],m)
  rob=robustness(series[PRIMARY]);results['robustness_primary']=rob;results['classification']=classify(results['markets'][PRIMARY],rob);results=clean(results)
  (outdir/'results.json').write_text(json.dumps(results,indent=2,sort_keys=True,allow_nan=False)+'\n',encoding='utf-8')
- c=results['classification'];lines=['# M1A Research Report','',f'- Analyzer: {VERSION}',f'- Cutoff: {mf["research_cutoff_utc"]}',f'- Primary: {PRIMARY}',f'- Classification: **{c["class"]} — {c["label"]}**','','## Audit']
+ c=results['classification'];rawmeta=mf['files']['raw_events.jsonl']
+ def fmt(v,n=4):
+  return 'n/a' if v is None else f'{v:.{n}f}'
+ lines=['# M1A Research Report','',
+  '## 1. Dataset freeze',
+  f'- Cutoff: {mf["research_cutoff_utc"]}',
+  f'- Raw receive UTC ns range: {rawmeta.get("first_utc_ns")} .. {rawmeta.get("last_utc_ns")}',
+  f'- Raw events: {rawmeta["records"]}; M0={mf.get("m0_version")}; analyzer={VERSION}.',
+  '- Frozen file SHA-256 hashes are recorded in freeze_manifest.json; post-cutoff M0 data is not read.',
+  '',
+  '## 2. Valid analysis time and exclusions']
  for m in MARKETS:
-  x=results['audit']['markets'][m];lines.append(f'- {m}: {x["grid_points"]} grid points; invalid={x["invalid_grids"]}; crossed={x["crossed_grids"]}; nonce anomalies during replay={x["nonce_anomalies_replay"]}; zero-trade-flow grids={x["zero_tradeflow_grids"]}.')
- lines+=['','## Interpretation boundary','This is an information-layer falsification test, not a trading strategy and not evidence of net profitability after fees/friction.','','## Qualifying information effects']
- lines += [f'- {x}' for x in c['qualifying_information']] or ['- None under the predeclared operational criteria.'];lines+=['','## Qualifying executable indications'];lines += [f'- {x}' for x in c['qualifying_executable']] or ['- None under the predeclared operational criteria.']
+  x=results['audit']['markets'][m];lines.append(f'- {m}: grid={x["grid_points"]}, valid={x["valid_grids"]} ({fmt(x["valid_analysis_seconds"],1)}s), invalid={x["invalid_grids"]}, checkpoints={x["checkpoint_count"]}, same-book-state fraction={fmt(x["same_bookstate_fraction"],3)}, zero-F3 fraction={fmt(x["zero_tradeflow_fraction"],3)}.')
+ lines+=['','## 3. Data-quality audit']
+ for m in MARKETS:
+  x=results['audit']['markets'][m];lines.append(f'- {m}: crossed={x["crossed_grids"]}; negative sizes={x["negative_size_updates"]}; nonpositive prices={x["nonpositive_price_updates"]}; replay nonce anomalies={x["nonce_anomalies_replay"]}; monotonic regressions={x["monotonic_regressions"]}.')
+ lines+=['','## 4. Feature distributions']
+ for m in MARKETS:
+  lines.append(f'### {m}')
+  for fn,z in results['markets'][m]['features'].items():lines.append(f'- {fn}: N={z["distribution"]["n"]}; q10/q30/q70/q90={z["quantiles_10_30_70_90"]}.')
+ lines+=['','## 5–10. Feature/horizon results, contrasts, executable markouts and bootstrap uncertainty']
+ for m in MARKETS:
+  lines+=['',f'### {m}' + (' (PRIMARY)' if m==PRIMARY else ' (EXPLORATORY)'),'| Feature | Horizon | N | Excluded | Top-bottom mid (bps) | 95% block CI (bps) | Monotone | Top10 ask→future-bid (bps) |','|---|---:|---:|---:|---:|---|---:|---:|']
+  for hk,h in results['markets'][m]['horizons'].items():
+   for fn,z in h.items():
+    b=z['top_minus_bottom_mid_return'];ci=b.get('ci95_bps',[None,None]);lines.append(f'| {fn} | {hk} | {z["n"]} | {z["excluded_invalid_or_resync"]} | {fmt(b.get("mean_diff_bps"))} | [{fmt(ci[0])}, {fmt(ci[1])}] | {fmt(z["monotone_adjacent_fraction"],2)} | {fmt(z["top10_executable_mean_bps"])} |')
+ lines+=['','## 11. BTC-EUR robustness',f'- Activity split: {results["robustness_primary"]["active_rule"]}','| Feature | Horizon | First half bps | Second half bps | Quiet bps | Active bps | Trim 1% bps |','|---|---:|---:|---:|---:|---:|---:|']
+ for fn,hs in results['robustness_primary']['tests'].items():
+  for hk,z in hs.items():lines.append(f'| {fn} | {hk} | {fmt(z["first_half"]*10000 if z["first_half"] is not None else None)} | {fmt(z["second_half"]*10000 if z["second_half"] is not None else None)} | {fmt(z["quiet"]*10000 if z["quiet"] is not None else None)} | {fmt(z["active"]*10000 if z["active"] is not None else None)} | {fmt(z["trim_largest_abs_1pct"]*10000 if z["trim_largest_abs_1pct"] is not None else None)} |')
+ lines+=['','## 12. BTC-USDC interpretation','BTC-USDC is exploratory only and never drives the M1A pass/fail classification. Sparse trade flow must not be interpreted as proof of no edge.','','## 13. Classification',f'**{c["class"]} — {c["label"]}**','',f'Qualifying information effects: {c["qualifying_information"] or "none"}.',f'Qualifying executable indications: {c["qualifying_executable"] or "none"}.','','## Interpretation boundary','This is an information-layer falsification test, not a trading strategy and not evidence of net profitability after fees/friction. No optimized thresholds or ML models are produced.']
  (outdir/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8');print(json.dumps({'results':str(outdir/'results.json'),'report':str(outdir/'report.md'),'classification':c},indent=2))
 if __name__=='__main__':main()
