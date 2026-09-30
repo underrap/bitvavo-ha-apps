@@ -217,7 +217,8 @@ def subset_contrast(s,feature,h,selector,trim=None):
 def robustness(s):
  n=len(s);mid=n//2;per=Counter();t0=s.t[0] if n else 0
  for i in range(1,n):
-  if s.book_version[i]!=s.book_version[i-1]:per[(s.t[i]-t0)//BLOCK_NS]+=1
+  delta=s.book_version[i]-s.book_version[i-1]
+  if delta>0:per[(s.t[i]-t0)//BLOCK_NS]+=delta
  med=statistics.median(per.values()) if per else 0;active={k:v>med for k,v in per.items()};out={'active_rule':f'60s book-update count > median ({med})','tests':{}}
  for f in ('F1_L1','F2_L5','F3_trade_1s'):
   out['tests'][f]={}
