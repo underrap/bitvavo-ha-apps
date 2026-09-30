@@ -28,13 +28,15 @@ def main():
             if m in last_ts and ts<last_ts[m]:regress[m]+=1
             last_ts[m]=ts; delays[m].append(r["recv_utc_ns"]-ts)
         elif ev=="book": books[m]+=1
-    kinds=Counter(); gaps=Counter(); valid=Counter(); disconnects=0
+    kinds=Counter(); gaps=Counter(); duplicates=Counter(); stale=Counter(); valid=Counter(); disconnects=0
     if ses.exists():
       for line in ses.open(encoding="utf-8"):
         try:x=json.loads(line)
         except:continue
         k=x.get("kind"); kinds[k]+=1
-        if k=="nonce_gap":gaps[x.get("market")]+=1
+        if k in ("nonce_gap","forward_nonce_gap"):gaps[x.get("market")]+=1
+        if k=="duplicate_nonce":duplicates[x.get("market")]+=1
+        if k=="stale_nonce":stale[x.get("market")]+=1
         if k=="book_valid":valid[x.get("market")]+=1
         if k=="disconnect":disconnects+=1
     out={"trades":{},"books":{},"collector":{"events":dict(kinds),"disconnects":disconnects},
@@ -45,7 +47,8 @@ def main():
         "timestamp_regressions":regress[m],
         "receive_minus_exchange_ns":{"p50":pct(ds,.5),"p90":pct(ds,.9),"p99":pct(ds,.99),
           "negative":sum(v<0 for v in ds)}}
-      out["books"][m]={"updates":books[m],"nonce_gaps":gaps[m],"book_valid_events":valid[m]}
+      out["books"][m]={"updates":books[m],"forward_nonce_gaps":gaps[m],
+        "duplicate_nonces":duplicates[m],"stale_nonces":stale[m],"book_valid_events":valid[m]}
     (root/"quality_report.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
     print(json.dumps(out,indent=2))
 
