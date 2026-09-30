@@ -271,10 +271,10 @@ def main():
   for fn,z in results['markets'][m]['features'].items():lines.append(f'- {fn}: N={z["distribution"]["n"]}; q10/q30/q70/q90={z["quantiles_10_30_70_90"]}.')
  lines+=['','## 5–10. Feature/horizon results, contrasts, executable markouts and bootstrap uncertainty']
  for m in MARKETS:
-  lines+=['',f'### {m}' + (' (PRIMARY)' if m==PRIMARY else ' (EXPLORATORY)'),'| Feature | Horizon | N | Excluded | Top-bottom mid (bps) | 95% block CI (bps) | Monotone | Top10 ask→future-bid (bps) |','|---|---:|---:|---:|---:|---|---:|---:|']
+  lines+=['',f'### {m}' + (' (PRIMARY)' if m==PRIMARY else ' (EXPLORATORY)'),'| Feature | Horizon | N | Excluded | Top-bottom mid (bps) | 95% block CI (bps) | Monotone | Top10 ask→future-bid (bps) | Bottom10 downward response (bps) |','|---|---:|---:|---:|---:|---|---:|---:|---:|']
   for hk,h in results['markets'][m]['horizons'].items():
    for fn,z in h.items():
-    b=z['top_minus_bottom_mid_return'];ci=b.get('ci95_bps',[None,None]);lines.append(f'| {fn} | {hk} | {z["n"]} | {z["excluded_invalid_or_resync"]} | {fmt(b.get("mean_diff_bps"))} | [{fmt(ci[0])}, {fmt(ci[1])}] | {fmt(z["monotone_adjacent_fraction"],2)} | {fmt(z["top10_executable_mean_bps"])} |')
+    b=z['top_minus_bottom_mid_return'];ci=b.get('ci95_bps',[None,None]);d0=z["groups"][0]["downward_sell_then_buy_response"].get("mean");lines.append(f'| {fn} | {hk} | {z["n"]} | {z["excluded_invalid_or_resync"]} | {fmt(b.get("mean_diff_bps"))} | [{fmt(ci[0])}, {fmt(ci[1])}] | {fmt(z["monotone_adjacent_fraction"],2)} | {fmt(z["top10_executable_mean_bps"])} | {fmt(d0*10000 if d0 is not None else None)} |')
  lines+=['','## 11. BTC-EUR robustness',f'- Activity split: {results["robustness_primary"]["active_rule"]}','| Feature | Horizon | First half bps | Second half bps | Quiet bps | Active bps | Trim 1% bps |','|---|---:|---:|---:|---:|---:|---:|']
  for fn,hs in results['robustness_primary']['tests'].items():
   for hk,z in hs.items():lines.append(f'| {fn} | {hk} | {fmt(z["first_half"]*10000 if z["first_half"] is not None else None)} | {fmt(z["second_half"]*10000 if z["second_half"] is not None else None)} | {fmt(z["quiet"]*10000 if z["quiet"] is not None else None)} | {fmt(z["active"]*10000 if z["active"] is not None else None)} | {fmt(z["trim_largest_abs_1pct"]*10000 if z["trim_largest_abs_1pct"] is not None else None)} |')
