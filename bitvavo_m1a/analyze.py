@@ -11,11 +11,11 @@ BLOCK_NS=60_000_000_000;BOOTSTRAPS=1000;SEED=20260930
 
 class Series:
  def __init__(self):
-  self.t=array('q');self.valid=bytearray();self.nonce=array('q');self.bid=array('d');self.ask=array('d');self.f1=array('d');self.f2=array('d');self.f3=array('d');self.book_version=array('q')
- def add(self,t,valid,nonce,bid,ask,f1,f2,f3,version):
+  self.t=array('q');self.valid=bytearray();self.nonce=array('q');self.bid=array('d');self.ask=array('d');self.f1=array('d');self.f2=array('d');self.f3=array('d');self.book_version=array('q');self.epoch=array('q')
+ def add(self,t,valid,nonce,bid,ask,f1,f2,f3,version,epoch):
   self.t.append(t);self.valid.append(1 if valid else 0);self.nonce.append(nonce if nonce is not None else -1)
   for a,v in ((self.bid,bid),(self.ask,ask),(self.f1,f1),(self.f2,f2),(self.f3,f3)):a.append(v if v is not None else math.nan)
-  self.book_version.append(version)
+  self.book_version.append(version);self.epoch.append(epoch)
  def __len__(self):return len(self.t)
 
 def clean(x):
@@ -115,7 +115,7 @@ def build_series(root,market,audit):
    else:bid=ask=f1=f2=math.nan;valid_now=False
    if not valid_now:invalid_grids+=1
    if last_ver==version:repeated+=1
-   last_ver=version;s.add(next_grid,valid_now,book.get('nonce'),bid,ask,f1,f2,f3,version);next_grid+=GRID_NS
+   last_ver=version;s.add(next_grid,valid_now,book.get('nonce'),bid,ask,f1,f2,f3,version,cp_i);next_grid+=GRID_NS
   if next_cp_t is not None and next_cp_t<=event_t:
    cp_i+=1;cp=cps[cp_i];book={'bids':dict(cp['bids']),'asks':dict(cp['asks']),'nonce':int(cp['nonce'])};valid=True;version+=1
    next_cp_t=int(cps[cp_i+1]['mono_ns']) if cp_i+1<len(cps) else None;continue
@@ -178,7 +178,7 @@ def analyze_market(s,market):
    vals=[];groups=[];times=[];execs=[];down=[]
    for i in range(len(s)-step):
     j=i+step
-    if not s.valid[i] or not s.valid[j] or any(not s.valid[k] for k in range(i,j+1)):continue
+    if not s.valid[i] or not s.valid[j] or s.epoch[i]!=s.epoch[j] or any(not s.valid[k] for k in range(i,j+1)):continue
     v=arr[i]
     if not math.isfinite(v):continue
     mid0=(s.bid[i]+s.ask[i])/2;mid1=(s.bid[j]+s.ask[j])/2
@@ -205,7 +205,7 @@ def analyze_market(s,market):
 
 def subset_contrast(s,feature,h,selector,trim=None):
  step=h//GRID_NS;arr={'F1_L1':s.f1,'F2_L5':s.f2,'F3_trade_1s':s.f3}[feature]
- idx=[i for i in range(len(s)-step) if selector(i) and s.valid[i] and s.valid[i+step] and all(s.valid[k] for k in range(i,i+step+1)) and math.isfinite(arr[i])]
+ idx=[i for i in range(len(s)-step) if selector(i) and s.valid[i] and s.valid[i+step] and s.epoch[i]==s.epoch[i+step] and all(s.valid[k] for k in range(i,i+step+1)) and math.isfinite(arr[i])]
  if not idx:return None
  q10=qtile((arr[i] for i in idx),.1);q90=qtile((arr[i] for i in idx),.9);rows=[]
  for i in idx:rows.append((arr[i],((s.bid[i+step]+s.ask[i+step])/2)/((s.bid[i]+s.ask[i])/2)-1))
