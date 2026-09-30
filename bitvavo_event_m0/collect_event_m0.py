@@ -122,17 +122,19 @@ class Collector:
                         b["bids"]=candidate["bids"]; b["asks"]=candidate["asks"]; b["nonce"]=candidate["nonce"]
                         b["buffer"]=[]; b["valid"]=True
                         levels=(len(b["bids"]),len(b["asks"]),b["nonce"])
+                        # Freeze a copy while holding the same lock that publishes validity.
+                        # Later WS updates may mutate b, but cannot alter this checkpoint.
+                        checkpoint={
+                            "kind":"book_checkpoint","market":m,"session":self.session,
+                            "utc_ns":utc_ns(),"mono_ns":mono_ns(),"nonce":b["nonce"],
+                            "bids":sorted(b["bids"].items(),key=lambda x:float(x[0]),reverse=True),
+                            "asks":sorted(b["asks"].items(),key=lambda x:float(x[0]))
+                        }
                 if not ok:
                     self.meta("resync_retry",market=m,reason="late_buffer_gap",snapshot_nonce=sn)
                     time.sleep(.05); continue
-                # Persist the exact reconstructed valid state. M1A must not depend on
-                # an unrecorded REST snapshot to reconstruct absolute book sizes.
-                checkpoint={
-                    "kind":"book_checkpoint","market":m,"session":self.session,
-                    "utc_ns":utc_ns(),"mono_ns":mono_ns(),"nonce":levels[2],
-                    "bids":sorted(b["bids"].items(),key=lambda x:float(x[0]),reverse=True),
-                    "asks":sorted(b["asks"].items(),key=lambda x:float(x[0]))
-                }
+                # Persist the already-frozen valid state outside the critical section.
+                # M1A must not depend on an unrecorded REST snapshot.
                 append(self.checkpoints,checkpoint)
                 self.meta("book_valid",market=m,nonce=levels[2],bid_levels=levels[0],ask_levels=levels[1],
                           checkpoint_nonce=levels[2])
