@@ -1,0 +1,12 @@
+name: "Bitvavo M1A Microstructure Test"
+version: "1.0.0"
+slug: "bitvavo_m1a"
+description: "Frozen causal same-venue microstructure information test; research only"
+arch:
+  - aarch64
+startup: once
+boot: manual_only
+init: false
+map:
+  - type: homeassistant_config
+    read_only: false
