@@ -23,7 +23,8 @@ class Collector:
         self.root=root; root.mkdir(parents=True,exist_ok=True)
         self.raw=root/"raw_events.jsonl"; self.sessions=root/"sessions.jsonl"
         self.books={m:{"valid":False,"nonce":None,"bids":{},"asks":{},"buffer":[],"syncing":False} for m in MARKETS}
-        self.counts=defaultdict(int); self.session=0; self.ws=None\n        self.book_locks={m:threading.RLock() for m in MARKETS}
+        self.counts=defaultdict(int); self.session=0; self.ws=None
+        self.book_locks={m:threading.RLock() for m in MARKETS}
     def meta(self,kind,**kw):
         append(self.sessions,{"kind":kind,"utc_ns":utc_ns(),"mono_ns":mono_ns(),"session":self.session,**kw})
     def record(self,msg):
