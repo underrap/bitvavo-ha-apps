@@ -87,7 +87,14 @@ def build_series(root,market,audit):
   return ii<0 or invalid_times[ii]<cp_times[ci]
  cp_i=0;cp=cps[0];book={'bids':dict(cp['bids']),'asks':dict(cp['asks']),'nonce':int(cp['nonce'])}
  valid=True;version=0;first_cp_t=int(cp['mono_ns']);next_cp_t=int(cps[1]['mono_ns']) if len(cps)>1 else None
- trades=deque();zero_trade=repeated=0;last_ver=None;s=Series();next_grid=((first_cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
+ trades=deque()
+ # Seed F3 from the causal 1s lookback immediately preceding the first checkpoint.
+ for r in load_jsonl(root/'raw_events.jsonl'):
+  msg=r.get('raw',{});t=int(r['recv_mono_ns'])
+  if msg.get('market')==market and msg.get('event')=='trade' and first_cp_t-LOOKBACK_NS<=t<first_cp_t:
+   try:trades.append((t,msg['side'],float(msg['amount'])))
+   except Exception:audit[market]['malformed_trades']+=1
+ zero_trade=repeated=0;last_ver=None;s=Series();next_grid=((first_cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
  crossed=neg_size=bad_price=nonce_anom=invalid_grids=0
  events=(r for r in load_jsonl(root/'raw_events.jsonl') if r.get('raw',{}).get('market')==market and int(r['recv_mono_ns'])>=first_cp_t)
  try:current=next(events)
