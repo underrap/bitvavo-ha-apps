@@ -58,9 +58,15 @@ class Collector:
                 if not b["syncing"]:
                     b["syncing"]=True; launch=True
             else:
-                expected=b["nonce"]+1
+                current=b["nonce"]; expected=current+1
                 if n!=expected:
-                    self.meta("nonce_gap",market=m,expected=expected,received=n)
+                    if n==current:
+                        anomaly="duplicate_nonce"
+                    elif n<current:
+                        anomaly="stale_nonce"
+                    else:
+                        anomaly="forward_nonce_gap"
+                    self.meta(anomaly,market=m,current=current,expected=expected,received=n)
                     b["valid"]=False; b["nonce"]=None; b["bids"]={}; b["asks"]={}; b["buffer"]=[msg]
                     if not b["syncing"]:
                         b["syncing"]=True; launch=True
