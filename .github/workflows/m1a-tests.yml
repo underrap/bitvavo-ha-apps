@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m py_compile bitvavo_m1a/freeze.py bitvavo_m1a/analyze.py bitvavo_event_m0/collect_event_m0.py
-      - run: python bitvavo_m1a/test_m1a.py
+      - run: python bitvavo_m1a/test_freeze.py\n      - run: python bitvavo_m1a/test_m1a.py
