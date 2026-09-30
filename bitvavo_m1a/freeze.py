@@ -19,11 +19,11 @@ def main():
     cutoff=a.cutoff_utc_ns or time.time_ns()
     if out.exists() and any(out.iterdir()): raise SystemExit(f'Refusing non-empty output: {out}')
     out.mkdir(parents=True,exist_ok=True)
-    counts={}; hashes={}
+    counts={}; hashes={}; bounds={}
     for name in FILES:
         ip=src/name; op=out/name
         if not ip.exists(): raise SystemExit(f'Missing required M0 file: {ip}')
-        n=0
+        n=0; first_ts=None; last_ts=None
         with ip.open(encoding='utf-8') as fi, op.open('w',encoding='utf-8',newline='\n') as fo:
             for lineno,line in enumerate(fi,1):
                 try: x=json.loads(line)
@@ -32,11 +32,12 @@ def main():
                 if ts is None: raise SystemExit(f'Missing receive UTC timestamp {ip}:{lineno}')
                 if int(ts) < cutoff:
                     fo.write(canon(x)+'\n'); n+=1
-        counts[name]=n; hashes[name]=sha256(op)
+                    first_ts=int(ts) if first_ts is None else min(first_ts,int(ts)); last_ts=int(ts) if last_ts is None else max(last_ts,int(ts))
+        counts[name]=n; hashes[name]=sha256(op); bounds[name]=(first_ts,last_ts)
     manifest={
       'schema':'m1a-freeze-v1','research_cutoff_utc_ns':cutoff,
       'research_cutoff_utc':time.strftime('%Y-%m-%dT%H:%M:%S',time.gmtime(cutoff//1_000_000_000))+f'.{cutoff%1_000_000_000:09d}Z',
-      'source':str(src),'files':{n:{'records':counts[n],'sha256':hashes[n]} for n in FILES},
+      'source':str(src),'files':{n:{'records':counts[n],'sha256':hashes[n],'first_utc_ns':bounds[n][0],'last_utc_ns':bounds[n][1]} for n in FILES},
       'freeze_tool_version':'1.0.0','m0_version':a.m0_version
     }
     (out/'freeze_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n',encoding='utf-8')
