@@ -1,5 +1,5 @@
 name: "Bitvavo Event-Level Research M0"
-version: "1.0.3"
+version: "1.0.4"
 slug: "bitvavo_event_m0"
 description: "Public event-level BTC/EUR and BTC/USDC research collector; no trading"
 arch:
