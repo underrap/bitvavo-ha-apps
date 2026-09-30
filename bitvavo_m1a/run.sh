@@ -1,0 +1,20 @@
+#!/usr/bin/with-contenv bashio
+set -euo pipefail
+SOURCE="/homeassistant/bitvavo_research/event_m0"
+ROOT="/homeassistant/bitvavo_research/m1a"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_DIR="${ROOT}/runs/${RUN_ID}"
+FROZEN="${RUN_DIR}/frozen"
+RESULTS="${RUN_DIR}/results"
+
+mkdir -p "${FROZEN}" "${RESULTS}"
+echo "M1A research-only analyzer"
+echo "Source: ${SOURCE}"
+echo "Run: ${RUN_DIR}"
+echo "Freezing dataset BEFORE analysis..."
+python3 -u /freeze.py --source "${SOURCE}" --output "${FROZEN}" --m0-version "1.0.5"
+echo "Running predeclared M1A analysis..."
+python3 -u /analyze.py --input "${FROZEN}" --output "${RESULTS}"
+echo "M1A complete."
+echo "Report: ${RESULTS}/report.md"
+echo "Machine-readable: ${RESULTS}/results.json"
