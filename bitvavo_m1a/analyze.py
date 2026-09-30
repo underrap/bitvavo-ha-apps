@@ -135,7 +135,7 @@ def build_series(root,market,audit):
    elif valid and n!=expected:nonce_anom+=1;valid=False
   try:current=next(events)
   except StopIteration:current=None
- audit[market].update({'crossed_grids':crossed,'negative_size_updates':neg_size,'nonpositive_price_updates':bad_price,'nonce_anomalies_replay':nonce_anom,'invalid_grids':invalid_grids,'grid_points':len(s),'same_bookstate_consecutive_grids':repeated,'zero_tradeflow_grids':zero_trade,'first_checkpoint_mono_ns':first_cp_t,'checkpoint_count':len(cps)})
+ audit[market].update({'crossed_grids':crossed,'negative_size_updates':neg_size,'nonpositive_price_updates':bad_price,'nonce_anomalies_replay':nonce_anom,'invalid_grids':invalid_grids,'valid_grids':len(s)-invalid_grids,'valid_analysis_seconds':(len(s)-invalid_grids)*0.5,'grid_points':len(s),'same_bookstate_consecutive_grids':repeated,'same_bookstate_fraction':repeated/len(s) if len(s) else None,'zero_tradeflow_grids':zero_trade,'zero_tradeflow_fraction':zero_trade/len(s) if len(s) else None,'first_checkpoint_mono_ns':first_cp_t,'checkpoint_count':len(cps)})
  return s
 
 def bins_for(vals):
@@ -197,7 +197,9 @@ def analyze_market(s,market):
     for _ in range(BOOTSTRAPS):
      samp=[bl[rng.randrange(len(bl))] for _ in range(len(bl))];sims.append(sum(x[0] for x in samp)/sum(x[1] for x in samp))
    means=[g['future_mid_return'].get('mean',math.nan) for g in gs];adj=[means[k+1]>=means[k] for k in range(4) if math.isfinite(means[k]) and math.isfinite(means[k+1])]
-   hout[fn]={'n':len(vals),'groups':gs,'top_minus_bottom_mid_return':boot,'top10_executable_markout':stats(top_exec),'top10_executable_bootstrap_ci95':[qtile(sims,.025),qtile(sims,.975)] if sims else [None,None],'monotone_adjacent_fraction':sum(adj)/len(adj) if adj else None}
+   boot['mean_diff_bps']=boot['mean_diff']*10000 if boot['mean_diff'] is not None else None
+   if boot['ci95'][0] is not None:boot['ci95_bps']=[boot['ci95'][0]*10000,boot['ci95'][1]*10000]
+   hout[fn]={'n':len(vals),'potential_grid_points':max(0,len(s)-step),'excluded_invalid_or_resync':max(0,len(s)-step)-len(vals),'groups':gs,'top_minus_bottom_mid_return':boot,'top10_executable_markout':stats(top_exec),'top10_executable_bootstrap_ci95':[qtile(sims,.025),qtile(sims,.975)] if sims else [None,None],'top10_executable_mean_bps':statistics.fmean(top_exec)*10000 if top_exec else None,'monotone_adjacent_fraction':sum(adj)/len(adj) if adj else None}
   out['horizons'][hk]=hout
  return out
 
