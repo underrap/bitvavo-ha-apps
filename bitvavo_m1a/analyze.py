@@ -4,10 +4,10 @@ import argparse,bisect,hashlib,heapq,json,math,random,statistics
 from array import array
 from collections import Counter,deque
 from pathlib import Path
-VERSION='1.0.0';MARKETS=('BTC-EUR','BTC-USDC');PRIMARY='BTC-EUR'
+VERSION='1.2.0';PROTOCOL='M1A-PREREG-v1.3';CONTENT_PROTOCOL='M1A-PREREG-v1.2';MARKETS=('BTC-EUR','BTC-USDC');PRIMARY='BTC-EUR'
 GRID_NS=500_000_000;LOOKBACK_NS=1_000_000_000
 HORIZONS_NS=(500_000_000,1_000_000_000,2_000_000_000,5_000_000_000)
-BLOCK_NS=60_000_000_000;BOOTSTRAPS=1000;SEED=20260930
+BLOCK_NS=60_000_000_000;BOOTSTRAPS=10000;SEED=20261002
 
 class Series:
  def __init__(self):
@@ -62,9 +62,12 @@ def load_jsonl(p):
 
 def audit_manifest(root):
  mf=json.loads((root/'freeze_manifest.json').read_text(encoding='utf-8'));errs=[]
- for name,meta in mf['files'].items():
-  h=hashlib.sha256((root/name).read_bytes()).hexdigest()
-  if h!=meta['sha256']:errs.append(f'hash mismatch {name}')
+ if mf.get('m0_version')!='1.0.5':errs.append(f"m0_version={mf.get('m0_version')!r}; expected '1.0.5'")
+ for name in ('raw_events.jsonl','sessions.jsonl','book_checkpoints.jsonl'):
+  meta=mf.get('files',{}).get(name);p=root/name
+  if not meta or not p.exists():errs.append(f'missing required frozen file/metadata {name}');continue
+  h=hashlib.sha256(p.read_bytes()).hexdigest()
+  if h!=meta.get('sha256'):errs.append(f'hash mismatch {name}')
  return mf,errs
 
 def build_series(root,market,audit):
@@ -88,12 +91,7 @@ def build_series(root,market,audit):
  cp_i=0;cp=cps[0];book={'bids':dict(cp['bids']),'asks':dict(cp['asks']),'nonce':int(cp['nonce'])}
  valid=True;version=0;first_cp_t=int(cp['mono_ns']);next_cp_t=int(cps[1]['mono_ns']) if len(cps)>1 else None
  trades=deque()
- # Seed F3 from the causal 1s lookback immediately preceding the first checkpoint.
- for r in load_jsonl(root/'raw_events.jsonl'):
-  msg=r.get('raw',{});t=int(r['recv_mono_ns'])
-  if msg.get('market')==market and msg.get('event')=='trade' and first_cp_t-LOOKBACK_NS<=t<first_cp_t:
-   try:trades.append((t,msg['side'],float(msg['amount'])))
-   except Exception:audit[market]['malformed_trades']+=1
+ # Hard segment boundary: TFI may not look back across a checkpoint/reconnect boundary.
  zero_trade=repeated=0;last_ver=None;s=Series();next_grid=((first_cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
  crossed=neg_size=bad_price=nonce_anom=invalid_grids=0
  events=(r for r in load_jsonl(root/'raw_events.jsonl') if r.get('raw',{}).get('market')==market and int(r['recv_mono_ns'])>=first_cp_t)
