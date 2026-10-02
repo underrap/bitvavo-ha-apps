@@ -1,331 +1,578 @@
 #!/usr/bin/env python3
-"""M1A same-venue microstructure information test. Research only; no trading."""
-import argparse,bisect,hashlib,heapq,json,math,random,statistics
-from array import array
-from collections import Counter,deque
+"""M1A-PREREG-v1.3 executor (content rules identical to v1.2). Research only; no trading."""
+from __future__ import annotations
+import argparse, bisect, hashlib, json, math, random, statistics
+from collections import Counter, deque
 from pathlib import Path
-VERSION='1.2.0';PROTOCOL='M1A-PREREG-v1.3';CONTENT_PROTOCOL='M1A-PREREG-v1.2';MARKETS=('BTC-EUR','BTC-USDC');PRIMARY='BTC-EUR'
-GRID_NS=500_000_000;LOOKBACK_NS=1_000_000_000
-HORIZONS_NS=(500_000_000,1_000_000_000,2_000_000_000,5_000_000_000)
-BLOCK_NS=60_000_000_000;BOOTSTRAPS=10000;SEED=20261002
 
-class Series:
- def __init__(self):
-  self.t=array('q');self.valid=bytearray();self.nonce=array('q');self.bid=array('d');self.ask=array('d');self.f1=array('d');self.f2=array('d');self.f3=array('d');self.book_version=array('q');self.epoch=array('q')
- def add(self,t,valid,nonce,bid,ask,f1,f2,f3,version,epoch):
-  self.t.append(t);self.valid.append(1 if valid else 0);self.nonce.append(nonce if nonce is not None else -1)
-  for a,v in ((self.bid,bid),(self.ask,ask),(self.f1,f1),(self.f2,f2),(self.f3,f3)):a.append(v if v is not None else math.nan)
-  self.book_version.append(version);self.epoch.append(epoch)
- def __len__(self):return len(self.t)
+VERSION = "1.2.0"
+PROTOCOL = "M1A-PREREG-v1.3"
+CONTENT_PROTOCOL = "M1A-PREREG-v1.2"
+PRIMARY = "BTC-EUR"
+EXPLORATORY = "BTC-USDC"
+MARKETS = (PRIMARY, EXPLORATORY)
 
-def clean(x):
- if isinstance(x,float) and not math.isfinite(x):return None
- if isinstance(x,dict):return {k:clean(v) for k,v in x.items()}
- if isinstance(x,(list,tuple)):return [clean(v) for v in x]
- return x
+GRID_NS = 500_000_000
+LOOKBACK_NS = 1_000_000_000
+HORIZONS_NS = (500_000_000, 1_000_000_000, 2_000_000_000, 5_000_000_000)
+PRIMARY_H_NS = 1_000_000_000
+BLOCK_NS = 60_000_000_000
+BLOCK_POINTS = BLOCK_NS // GRID_NS
+BOOTSTRAPS = 10_000
+SEED = 20261002
 
-def qtile(xs,p):
- ys=sorted(x for x in xs if math.isfinite(x))
- if not ys:return math.nan
- pos=(len(ys)-1)*p;lo=int(pos);hi=min(len(ys)-1,lo+1);w=pos-lo
- return ys[lo]*(1-w)+ys[hi]*w
+MIN_TOTAL = 3600
+MIN_HOLDOUT = 1440
+MIN_HOLDOUT_SECONDS = 1800
+MIN_FULL_BLOCKS = 10
+MIN_QUANTILE_GROUP = 30
+MIN_TRIMMED = 1000
 
-def stats(xs):
- a=[x for x in xs if math.isfinite(x)]
- if not a:return {'n':0}
- return {'n':len(a),'mean':statistics.fmean(a),'median':statistics.median(a),'p05':qtile(a,.05),'p25':qtile(a,.25),'p75':qtile(a,.75),'p95':qtile(a,.95),'p_positive':sum(x>0 for x in a)/len(a),'p_negative':sum(x<0 for x in a)/len(a)}
+INVALID_KINDS = {
+    "connect", "disconnect", "duplicate_nonce", "stale_nonce", "forward_nonce_gap",
+    "nonce_gap", "resync_failed", "resync_exception", "ws_error", "run_exception"
+}
 
-def imbalance(b,a):
- d=b+a;return (b-a)/d if d>0 else math.nan
+def clean_json(x):
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
+    if isinstance(x, dict):
+        return {k: clean_json(v) for k,v in x.items()}
+    if isinstance(x, list):
+        return [clean_json(v) for v in x]
+    return x
 
-def book_metrics(bids,asks):
- if not bids or not asks:return None
- bp=heapq.nlargest(5,((float(p),float(s)) for p,s in bids.items() if float(s)>0),key=lambda x:x[0])
- ap=heapq.nsmallest(5,((float(p),float(s)) for p,s in asks.items() if float(s)>0),key=lambda x:x[0])
- if not bp or not ap:return None
- bid,bs=bp[0];ask,az=ap[0]
- return bid,ask,imbalance(bs,az),imbalance(sum(s for _,s in bp),sum(s for _,s in ap))
+def canonical(obj):
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
-def apply(book,msg):
- for side in ('bids','asks'):
-  d=book[side]
-  for p,s in msg.get(side,[]):
-   if float(s)==0:d.pop(p,None)
-   else:d[p]=s
- book['nonce']=int(msg['nonce'])
+def sha256_file(path: Path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
 
-def load_jsonl(p):
- with p.open(encoding='utf-8') as f:
-  for ln,line in enumerate(f,1):
-   try:yield json.loads(line)
-   except Exception as e:raise RuntimeError(f'{p}:{ln}: invalid JSON: {e}')
+def load_jsonl(path: Path):
+    with path.open(encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            try:
+                yield json.loads(line)
+            except Exception as e:
+                raise RuntimeError(f"{path}:{ln}: invalid JSON: {e}")
 
-def audit_manifest(root):
- mf=json.loads((root/'freeze_manifest.json').read_text(encoding='utf-8'));errs=[]
- if mf.get('m0_version')!='1.0.5':errs.append(f"m0_version={mf.get('m0_version')!r}; expected '1.0.5'")
- for name in ('raw_events.jsonl','sessions.jsonl','book_checkpoints.jsonl'):
-  meta=mf.get('files',{}).get(name);p=root/name
-  if not meta or not p.exists():errs.append(f'missing required frozen file/metadata {name}');continue
-  h=hashlib.sha256(p.read_bytes()).hexdigest()
-  if h!=meta.get('sha256'):errs.append(f'hash mismatch {name}')
- return mf,errs
+def qtile(xs, p):
+    ys = sorted(float(x) for x in xs if x is not None and math.isfinite(float(x)))
+    if not ys:
+        return math.nan
+    pos = (len(ys) - 1) * p
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return ys[lo]
+    w = pos - lo
+    return ys[lo] * (1 - w) + ys[hi] * w
 
-def build_series(root,market,audit):
- cps=sorted((x for x in load_jsonl(root/'book_checkpoints.jsonl') if x.get('market')==market),key=lambda x:int(x['mono_ns']))
- if not cps:raise RuntimeError(f'No persisted book checkpoint for {market}; M1A F1/F2 impossible on this freeze.')
- last=-1;regress=0
- for r in load_jsonl(root/'raw_events.jsonl'):
-  t=int(r['recv_mono_ns'])
-  if last>=0 and t<last:regress+=1
-  last=t
- audit[market]['monotonic_regressions']=regress
- if regress:raise RuntimeError(f'{market}: monotonic receive clock regressed; split by boot epoch first.')
- invalid_kinds={'connect','disconnect','duplicate_nonce','stale_nonce','forward_nonce_gap','nonce_gap','resync_failed','resync_exception'}
- invalid_times=sorted(int(x['mono_ns']) for x in load_jsonl(root/'sessions.jsonl') if x.get('kind') in invalid_kinds and x.get('market') in (None,market))
- cp_times=[int(x['mono_ns']) for x in cps]
- def interval_valid(t):
-  ci=bisect.bisect_right(cp_times,t)-1
-  if ci<0:return False
-  ii=bisect.bisect_right(invalid_times,t)-1
-  return ii<0 or invalid_times[ii]<cp_times[ci]
- cp_i=0;cp=cps[0];book={'bids':dict(cp['bids']),'asks':dict(cp['asks']),'nonce':int(cp['nonce'])}
- valid=True;version=0;first_cp_t=int(cp['mono_ns']);next_cp_t=int(cps[1]['mono_ns']) if len(cps)>1 else None
- trades=deque()
- # Hard segment boundary: TFI may not look back across a checkpoint/reconnect boundary.
- zero_trade=repeated=0;last_ver=None;s=Series();next_grid=((first_cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
- crossed=neg_size=bad_price=nonce_anom=invalid_grids=0
- events=(r for r in load_jsonl(root/'raw_events.jsonl') if r.get('raw',{}).get('market')==market and int(r['recv_mono_ns'])>=first_cp_t)
- try:current=next(events)
- except StopIteration:current=None
- while current is not None or next_cp_t is not None:
-  event_t=int(current['recv_mono_ns']) if current is not None else 2**63-1
-  boundary=min(event_t,next_cp_t if next_cp_t is not None else 2**63-1)
-  while next_grid<boundary:
-   while trades and trades[0][0]<next_grid-LOOKBACK_NS:trades.popleft()
-   buy=sum(v for t,side,v in trades if t<=next_grid and side=='buy');sell=sum(v for t,side,v in trades if t<=next_grid and side=='sell')
-   f3=imbalance(buy,sell) if buy+sell>0 else 0.0
-   if buy+sell==0:zero_trade+=1
-   met=book_metrics(book['bids'],book['asks']) if valid and interval_valid(next_grid) else None
-   if met:
-    bid,ask,f1,f2=met;valid_now=bid<ask and bid>0 and ask>0
-    if bid>=ask:crossed+=1
-    if bid<=0 or ask<=0:bad_price+=1
-   else:bid=ask=f1=f2=math.nan;valid_now=False
-   if not valid_now:invalid_grids+=1
-   if last_ver==version:repeated+=1
-   last_ver=version;s.add(next_grid,valid_now,book.get('nonce'),bid,ask,f1,f2,f3,version,cp_i);next_grid+=GRID_NS
-  if next_cp_t is not None and next_cp_t<=event_t:
-   cp_i+=1;cp=cps[cp_i];book={'bids':dict(cp['bids']),'asks':dict(cp['asks']),'nonce':int(cp['nonce'])};valid=True;version+=1
-   next_cp_t=int(cps[cp_i+1]['mono_ns']) if cp_i+1<len(cps) else None;continue
-  if current is None:break
-  msg=current['raw']
-  if msg.get('event')=='trade':
-   try:trades.append((event_t,msg['side'],float(msg['amount'])))
-   except Exception:audit[market]['malformed_trades']+=1
-  elif msg.get('event')=='book':
-   n=int(msg['nonce']);expected=int(book['nonce'])+1
-   if valid and n==expected:
-    for side in ('bids','asks'):
-     for p,z in msg.get(side,[]):
-      if float(p)<=0:bad_price+=1
-      if float(z)<0:neg_size+=1
-    apply(book,msg);version+=1
-   elif valid and n!=expected:nonce_anom+=1;valid=False
-  try:current=next(events)
-  except StopIteration:current=None
- audit[market].update({'crossed_grids':crossed,'negative_size_updates':neg_size,'nonpositive_price_updates':bad_price,'nonce_anomalies_replay':nonce_anom,'invalid_grids':invalid_grids,'valid_grids':len(s)-invalid_grids,'valid_analysis_seconds':(len(s)-invalid_grids)*0.5,'grid_points':len(s),'same_bookstate_consecutive_grids':repeated,'same_bookstate_fraction':repeated/len(s) if len(s) else None,'zero_tradeflow_grids':zero_trade,'zero_tradeflow_fraction':zero_trade/len(s) if len(s) else None,'first_checkpoint_mono_ns':first_cp_t,'checkpoint_count':len(cps)})
- return s
+def descriptive(xs):
+    ys = [float(x) for x in xs if x is not None and math.isfinite(float(x))]
+    if not ys:
+        return {"n": 0, "mean": None, "median": None, "std": None}
+    return {
+        "n": len(ys),
+        "mean": statistics.fmean(ys),
+        "median": statistics.median(ys),
+        "std": statistics.stdev(ys) if len(ys) >= 2 else 0.0,
+    }
 
-def rankdata(xs):
- order=sorted(range(len(xs)),key=xs.__getitem__);out=[0.0]*len(xs);i=0
- while i<len(order):
-  j=i+1;v=xs[order[i]]
-  while j<len(order) and xs[order[j]]==v:j+=1
-  r=(i+1+j)/2
-  for k in range(i,j):out[order[k]]=r
-  i=j
- return out
+def rankdata(values):
+    pairs = sorted((float(v), i) for i, v in enumerate(values))
+    ranks = [0.0] * len(pairs)
+    i = 0
+    while i < len(pairs):
+        j = i + 1
+        while j < len(pairs) and pairs[j][0] == pairs[i][0]:
+            j += 1
+        avg = (i + 1 + j) / 2.0
+        for k in range(i, j):
+            ranks[pairs[k][1]] = avg
+        i = j
+    return ranks
 
-def pearson(x,y):
- if len(x)<2 or len(x)!=len(y):return math.nan
- mx=statistics.fmean(x);my=statistics.fmean(y);sx=sy=sxy=0.0
- for a,b in zip(x,y):
-  da=a-mx;db=b-my;sx+=da*da;sy+=db*db;sxy+=da*db
- return sxy/math.sqrt(sx*sy) if sx>0 and sy>0 else math.nan
+def pearson(x, y):
+    n = len(x)
+    if n < 2:
+        return math.nan
+    mx, my = statistics.fmean(x), statistics.fmean(y)
+    dx = [v - mx for v in x]
+    dy = [v - my for v in y]
+    sx = sum(v*v for v in dx)
+    sy = sum(v*v for v in dy)
+    if sx <= 0 or sy <= 0:
+        return math.nan
+    return sum(a*b for a,b in zip(dx,dy)) / math.sqrt(sx*sy)
 
-def spearman(x,y):
- rows=[(float(a),float(b)) for a,b in zip(x,y) if math.isfinite(float(a)) and math.isfinite(float(b))]
- if len(rows)<2:return math.nan
- xx=[z[0] for z in rows];yy=[z[1] for z in rows]
- return pearson(rankdata(xx),rankdata(yy))
+def spearman(x, y):
+    if len(x) != len(y) or len(x) < 2:
+        return math.nan
+    return pearson(rankdata(x), rankdata(y))
 
-def describe(xs):
- a=[float(x) for x in xs if math.isfinite(float(x))]
- if not a:return {'n':0,'mean':None,'median':None,'std':None}
- return {'n':len(a),'mean':statistics.fmean(a),'median':statistics.median(a),'std':statistics.stdev(a) if len(a)>1 else 0.0}
+def imbalance(b, a):
+    d = b + a
+    return (b-a)/d if d > 0 else math.nan
 
-def feature_arr(s,name):
- return {'L1':s.f1,'D5':s.f2,'TFI_1s':s.f3}[name]
+def book_metrics(bids, asks):
+    bp = sorted(((float(p), float(s)) for p,s in bids.items() if float(s) > 0), reverse=True)[:5]
+    ap = sorted(((float(p), float(s)) for p,s in asks.items() if float(s) > 0))[:5]
+    if not bp or not ap:
+        return None
+    bid, bs = bp[0]
+    ask, az = ap[0]
+    if bid <= 0 or ask <= 0 or bid >= ask:
+        return None
+    return {
+        "bid": bid,
+        "ask": ask,
+        "mid": (bid+ask)/2.0,
+        "f1": imbalance(bs, az),
+        "f2": imbalance(sum(s for _,s in bp), sum(s for _,s in ap)),
+    }
 
-def target_bps(s,i,h):
- step=h//GRID_NS;j=i+step
- if j>=len(s):return None
- if s.t[j]!=s.t[i]+h or not s.valid[i] or not s.valid[j] or s.epoch[i]!=s.epoch[j]:return None
- if any(not s.valid[k] for k in range(i,j+1)):return None
- m0=(s.bid[i]+s.ask[i])/2;m1=(s.bid[j]+s.ask[j])/2
- return 10000*(m1/m0-1)
+def apply_book(book, msg):
+    for side in ("bids", "asks"):
+        d = book[side]
+        for p,s in msg.get(side, []):
+            if float(s) == 0:
+                d.pop(p, None)
+            else:
+                d[p] = s
+    book["nonce"] = int(msg["nonce"])
 
-def primary_eligible(s):
- out=[]
- for i in range(len(s)):
-  if not s.valid[i] or not math.isfinite(s.f1[i]):continue
-  if target_bps(s,i,1_000_000_000) is not None:out.append(i)
- return out
+def audit_manifest(root: Path):
+    mf = json.loads((root/"freeze_manifest.json").read_text(encoding="utf-8"))
+    errors = []
+    if mf.get("m0_version") != "1.0.5":
+        errors.append(f'm0_version must equal 1.0.5, got {mf.get("m0_version")!r}')
+    for name in ("raw_events.jsonl", "sessions.jsonl", "book_checkpoints.jsonl"):
+        meta = mf.get("files", {}).get(name)
+        p = root/name
+        if not meta or not p.exists():
+            errors.append(f"missing manifest/file entry: {name}")
+            continue
+        actual = sha256_file(p)
+        if actual != meta.get("sha256"):
+            errors.append(f"hash mismatch: {name}")
+    return mf, errors
 
-def split_primary(s):
- ids=primary_eligible(s);ids.sort(key=lambda i:s.t[i]);nd=math.floor(.60*len(ids))
- d=ids[:nd];h=ids[nd:];boundary=s.t[h[0]] if h else math.inf
- return d,h,boundary
+def build_grid(root: Path, market: str):
+    checkpoints = sorted(
+        (x for x in load_jsonl(root/"book_checkpoints.jsonl") if x.get("market")==market),
+        key=lambda x: int(x["mono_ns"])
+    )
+    if not checkpoints:
+        raise RuntimeError(f"{market}: no persisted book checkpoint")
 
-def rows_for(s,feature,h,part,boundary):
- arr=feature_arr(s,feature);rows=[]
- for i in range(len(s)):
-  if part=='DISCOVERY' and s.t[i]>=boundary:continue
-  if part=='HOLDOUT' and s.t[i]<boundary:continue
-  if not s.valid[i] or not math.isfinite(arr[i]):continue
-  y=target_bps(s,i,h)
-  if y is None or not math.isfinite(y):continue
-  rows.append((int(s.t[i]),int(s.epoch[i]),float(arr[i]),float(y),i))
- return rows
+    last = -1
+    regressions = 0
+    for r in load_jsonl(root/"raw_events.jsonl"):
+        t = int(r["recv_mono_ns"])
+        if last >= 0 and t < last:
+            regressions += 1
+        last = t
+    if regressions:
+        raise RuntimeError(f"monotonic receive clock regressed {regressions} times")
 
-def elapsed_seconds(rows):
- by={}
- for t,e,*_ in rows:
-  z=by.setdefault(e,[t,t]);z[0]=min(z[0],t);z[1]=max(z[1],t)
- return sum((b-a+GRID_NS)/1e9 for a,b in by.values())
+    invalid_times = sorted(
+        int(x["mono_ns"]) for x in load_jsonl(root/"sessions.jsonl")
+        if x.get("kind") in INVALID_KINDS and x.get("market") in (None, market)
+    )
 
-def nonoverlap_blocks(rows):
- by={}
- for t,e,*_ in rows:by.setdefault(e,[]).append(t)
- n=0
- for ts in by.values():
-  ts.sort()
-  if not ts:continue
-  start=ts[0];last=ts[-1]
-  while start+BLOCK_NS<=last+GRID_NS:
-   lo=bisect.bisect_left(ts,start);hi=bisect.bisect_left(ts,start+BLOCK_NS)
-   if hi-lo>=2:n+=1
-   start+=BLOCK_NS
- return n
+    first_cp = checkpoints[0]
+    cp_i = 0
+    cp_t = int(first_cp["mono_ns"])
+    book = {"bids": dict(first_cp["bids"]), "asks": dict(first_cp["asks"]), "nonce": int(first_cp["nonce"])}
+    valid = True
+    segment = 0
+    next_cp_t = int(checkpoints[1]["mono_ns"]) if len(checkpoints)>1 else None
 
-def moving_blocks(rows):
- by={}
- for p,r in enumerate(rows):by.setdefault(r[1],[]).append(p)
- out=[]
- for pos in by.values():
-  times=[rows[p][0] for p in pos]
-  for a,p in enumerate(pos):
-   t0=rows[p][0];hi=bisect.bisect_left(times,t0+BLOCK_NS,lo=a)
-   if hi<len(times) and times[hi]>=t0+BLOCK_NS:
-    block=pos[a:hi]
-    if len(block)>=2:out.append(block)
- return out
+    def cp_valid_at(t, checkpoint_time):
+        ii = bisect.bisect_right(invalid_times, t) - 1
+        return ii < 0 or invalid_times[ii] < checkpoint_time
 
-def bootstrap_primary(rows):
- obs=spearman([r[2] for r in rows],[r[3] for r in rows]);blocks=moving_blocks(rows)
- if not math.isfinite(obs) or not blocks:return {'rho':clean(obs),'replicates':0,'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(blocks)}
- rng=random.Random(SEED);sims=[];n=len(rows)
- for _ in range(BOOTSTRAPS):
-  pick=[]
-  while len(pick)<n:pick.extend(blocks[rng.randrange(len(blocks))])
-  pick=pick[:n];rho=spearman([rows[p][2] for p in pick],[rows[p][3] for p in pick])
-  if math.isfinite(rho):sims.append(rho)
- if len(sims)!=BOOTSTRAPS:return {'rho':obs,'replicates':len(sims),'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(blocks)}
- return {'rho':obs,'replicates':len(sims),'p_boot':(1+sum(x<=0 for x in sims))/(BOOTSTRAPS+1),'ci95':[qtile(sims,.025),qtile(sims,.975)],'moving_block_candidates':len(blocks)}
+    trades = deque()
+    for r in load_jsonl(root/"raw_events.jsonl"):
+        t = int(r["recv_mono_ns"])
+        if t > cp_t:
+            break
+        msg = r.get("raw", {})
+        if msg.get("market")==market and msg.get("event")=="trade" and cp_t-LOOKBACK_NS < t <= cp_t:
+            try:
+                trades.append((t, msg["side"], float(msg["amount"])))
+            except Exception:
+                pass
 
-def quarter_rows(rows):
- q,r=divmod(len(rows),4);out=[];at=0
- for k in range(4):
-  n=q+(1 if k<r else 0);out.append(rows[at:at+n]);at+=n
- return out
+    def market_events():
+        for r in load_jsonl(root/"raw_events.jsonl"):
+            msg=r.get("raw",{})
+            if msg.get("market")==market and int(r["recv_mono_ns"])>=cp_t:
+                yield r
 
-def contrast(rows,q20,q80):
- lo=[r[3] for r in rows if r[2]<=q20];hi=[r[3] for r in rows if r[2]>=q80]
- return {'value_bps':statistics.fmean(hi)-statistics.fmean(lo) if lo and hi else None,'low_n':len(lo),'high_n':len(hi)}
+    events=market_events()
+    try:
+        current=next(events)
+    except StopIteration:
+        current=None
 
-def trim_primary(rows):
- ys=[r[3] for r in rows]
- if not ys:return {'q01_bps':None,'q99_bps':None,'n':0,'rho':None}
- q01=qtile(ys,.01);q99=qtile(ys,.99);keep=[r for r in rows if q01<=r[3]<=q99]
- return {'q01_bps':q01,'q99_bps':q99,'n':len(keep),'rho':clean(spearman([r[2] for r in keep],[r[3] for r in keep]))}
+    next_grid = ((cp_t + GRID_NS - 1)//GRID_NS)*GRID_NS
+    rows = []
+    audit = Counter()
+    audit["checkpoint_count"] = len(checkpoints)
 
-def feature_quantiles(s,dids):
- out={}
- for f in ('L1','D5','TFI_1s'):
-  arr=feature_arr(s,f);vals=[arr[i] for i in dids if math.isfinite(arr[i])]
-  out[f]={'q20':clean(qtile(vals,.20)),'q80':clean(qtile(vals,.80)),'n':len(vals)}
- return out
+    while current is not None or next_cp_t is not None:
+        event_t = int(current["recv_mono_ns"]) if current is not None else 2**63-1
+        boundary = min(event_t, next_cp_t if next_cp_t is not None else 2**63-1)
 
-def matrix(s,dids,hids,boundary):
- qs=feature_quantiles(s,dids);out={}
- for f in ('L1','D5','TFI_1s'):
-  out[f]={'discovery_quantiles':qs[f],'horizons':{}}
-  for h in HORIZONS_NS:
-   hk=f'{h/1e9:g}s';d=rows_for(s,f,h,'DISCOVERY',boundary);ho=rows_for(s,f,h,'HOLDOUT',boundary)
-   out[f]['horizons'][hk]={
-    'DISCOVERY':{'n':len(d),'feature':describe(r[2] for r in d),'target_bps':describe(r[3] for r in d),'spearman_rho':clean(spearman([r[2] for r in d],[r[3] for r in d]))},
-    'HOLDOUT':{'n':len(ho),'feature':describe(r[2] for r in ho),'target_bps':describe(r[3] for r in ho),'spearman_rho':clean(spearman([r[2] for r in ho],[r[3] for r in ho]))}
-   }
- return out,qs
+        while next_grid < boundary:
+            while trades and trades[0][0] <= next_grid-LOOKBACK_NS:
+                trades.popleft()
+            buy = sum(v for t,side,v in trades if t <= next_grid and side=="buy")
+            sell = sum(v for t,side,v in trades if t <= next_grid and side=="sell")
+            f3 = imbalance(buy, sell) if buy+sell>0 else 0.0
+            if buy+sell==0:
+                audit["zero_tradeflow_grids"] += 1
 
-def evaluate_primary(s,dids,hids,boundary,q):
- rows=rows_for(s,'L1',1_000_000_000,'HOLDOUT',boundary);expected=set(hids);actual={r[4] for r in rows}
- c=contrast(rows,q['q20'],q['q80']) if q.get('q20') is not None and q.get('q80') is not None else {'value_bps':None,'low_n':0,'high_n':0}
- quarters=quarter_rows(rows);qr=[clean(spearman([r[2] for r in z],[r[3] for r in z])) for z in quarters];tr=trim_primary(rows)
- checks={
-  'primary_population_match':expected==actual,
-  'primary_eligible_total_at_least_3600':len(dids)+len(hids)>=3600,
-  'holdout_primary_eligible_at_least_1440':len(rows)>=1440,
-  'holdout_valid_seconds_at_least_1800':elapsed_seconds(rows)>=1800,
-  'at_least_10_valid_60s_blocks':nonoverlap_blocks(rows)>=10,
-  'all_four_quarters_nonempty':all(len(z)>=1 for z in quarters),
-  'q20_holdout_group_at_least_30':c['low_n']>=30,
-  'q80_holdout_group_at_least_30':c['high_n']>=30,
-  'trim_leaves_at_least_1000':tr['n']>=1000
- }
- structural=all(checks.values())
- boot=bootstrap_primary(rows) if structural else {'rho':clean(spearman([r[2] for r in rows],[r[3] for r in rows])),'replicates':0,'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(moving_blocks(rows))}
- numerical=boot['rho'] is not None and boot['replicates']==BOOTSTRAPS and boot['p_boot'] is not None and boot['ci95'][0] is not None and c['value_bps'] is not None
- checks['confirmatory_statistics_numerically_defined']=numerical
- if not all(checks.values()):
-  decision='INCONCLUSIVE';conds=None;failed=[k for k,v in checks.items() if not v]
- else:
-  conds={'rho_gt_0':boot['rho']>0,'p_boot_lt_0_05':boot['p_boot']<.05,'ci95_lower_gt_0':boot['ci95'][0]>0,'q80_minus_q20_gt_0':c['value_bps']>0,'at_least_3_of_4_quarter_rhos_gt_0':sum(x is not None and x>0 for x in qr)>=3,'trimmed_rho_gt_0':tr['rho'] is not None and tr['rho']>0}
-  decision='PASS' if all(conds.values()) else 'FAIL';failed=[k for k,v in conds.items() if not v]
- return {'population_n':len(rows),'valid_chronological_seconds':elapsed_seconds(rows),'distinct_valid_60s_blocks':nonoverlap_blocks(rows),'bootstrap':boot,'q80_minus_q20':c,'quarter_rhos':qr,'trim':tr,'minimum_data_checks':checks,'pass_conditions':conds,'failed_conditions':failed,'decision':decision}
+            met = book_metrics(book["bids"], book["asks"]) if valid and cp_valid_at(next_grid, cp_t) else None
+            if met is None:
+                audit["invalid_grids"] += 1
+                rows.append({"t":next_grid,"segment":segment,"valid":False,"bid":None,"ask":None,"mid":None,
+                             "f1":None,"f2":None,"f3":f3})
+            else:
+                rows.append({"t":next_grid,"segment":segment,"valid":True,**met,"f3":f3})
+                audit["valid_grids"] += 1
+            next_grid += GRID_NS
 
-def render_report(r):
- p=r['primary_confirmatory'];lines=['# M1A Research Report','',f'- Protocol: {r["protocol"]}',f'- Executor: {r["executor_version"]}',f'- Freeze cutoff: {r["freeze_manifest"].get("research_cutoff_utc")}',f'- Decision: **{p["decision"]}**','','## Primary confirmatory gate',f'- HOLDOUT N: {p["population_n"]}',f'- Spearman rho: {p["bootstrap"]["rho"]}',f'- one-sided bootstrap p: {p["bootstrap"]["p_boot"]}',f'- percentile 95% CI: {p["bootstrap"]["ci95"]}',f'- q80-q20 contrast (bp): {p["q80_minus_q20"]["value_bps"]}',f'- quarter rhos: {p["quarter_rhos"]}',f'- trimmed rho: {p["trim"]["rho"]}','','## Minimum-data / integrity gates']
- for k,v in p['minimum_data_checks'].items():lines.append(f'- {k}: {v}')
- lines+=['','## Audit']
- for m,a in r['audit']['markets'].items():lines.append(f'- {m}: {a}')
- lines+=['','## Interpretation boundary','M1A tests event-level information only. It is not a trading strategy and contains no fee/P&L conclusion.']
- return '\n'.join(lines)+'\n'
+        if next_cp_t is not None and next_cp_t <= event_t:
+            cp_i += 1
+            cp = checkpoints[cp_i]
+            cp_t = int(cp["mono_ns"])
+            book = {"bids":dict(cp["bids"]), "asks":dict(cp["asks"]), "nonce":int(cp["nonce"])}
+            valid = True
+            segment += 1
+            next_cp_t = int(checkpoints[cp_i+1]["mono_ns"]) if cp_i+1 < len(checkpoints) else None
+            continue
+
+        if current is None:
+            break
+
+        msg = current["raw"]
+        t = int(current["recv_mono_ns"])
+        if msg.get("event")=="trade":
+            try:
+                trades.append((t,msg["side"],float(msg["amount"])))
+                audit["trade_events"] += 1
+            except Exception:
+                audit["malformed_trades"] += 1
+        elif msg.get("event")=="book":
+            n = int(msg["nonce"])
+            if valid and n == int(book["nonce"])+1:
+                apply_book(book,msg)
+                audit["book_updates"] += 1
+            elif valid:
+                valid = False
+                audit["nonce_anomalies_replay"] += 1
+
+        try:
+            current=next(events)
+        except StopIteration:
+            current=None
+
+    audit["grid_points"] = len(rows)
+    audit["monotonic_regressions"] = regressions
+    return rows, dict(audit)
+
+def row_target(rows, i, h_ns):
+    step = h_ns // GRID_NS
+    j = i + step
+    if j >= len(rows):
+        return None
+    a,b = rows[i], rows[j]
+    if not a["valid"] or not b["valid"] or a["segment"] != b["segment"]:
+        return None
+    if b["t"] - a["t"] != h_ns:
+        return None
+    return 1e4 * ((b["mid"] - a["mid"]) / a["mid"])
+
+def primary_eligible(rows):
+    out=[]
+    for i,r in enumerate(rows):
+        if not r["valid"] or r["f1"] is None or not math.isfinite(r["f1"]):
+            continue
+        y = row_target(rows,i,PRIMARY_H_NS)
+        if y is not None and math.isfinite(y):
+            out.append(i)
+    return out
+
+def rows_for(rows, indices, feature, h_ns):
+    out=[]
+    for i in indices:
+        x = rows[i].get(feature)
+        if x is None or not math.isfinite(float(x)):
+            continue
+        y = row_target(rows,i,h_ns)
+        if y is None or not math.isfinite(float(y)):
+            continue
+        out.append((rows[i]["t"], rows[i]["segment"], float(x), float(y)))
+    return out
+
+def split_primary(rows):
+    eligible = primary_eligible(rows)
+    nd = math.floor(0.60 * len(eligible))
+    discovery = eligible[:nd]
+    holdout = eligible[nd:]
+    boundary_t = rows[holdout[0]]["t"] if holdout else None
+    return eligible, discovery, holdout, boundary_t
+
+def indices_by_boundary(rows, boundary_t, part):
+    if boundary_t is None:
+        return []
+    if part=="discovery":
+        return [i for i,r in enumerate(rows) if r["t"] < boundary_t]
+    return [i for i,r in enumerate(rows) if r["t"] >= boundary_t]
+
+def full_60s_blocks(primary_holdout_rows):
+    if not primary_holdout_rows:
+        return 0
+    total=0
+    run=1
+    for a,b in zip(primary_holdout_rows, primary_holdout_rows[1:]):
+        if b[1]==a[1] and b[0]-a[0]==GRID_NS:
+            run += 1
+        else:
+            total += run // BLOCK_POINTS
+            run=1
+    total += run // BLOCK_POINTS
+    return total
+
+def moving_block_candidates(rows4):
+    cands=[]
+    n=len(rows4)
+    for i in range(n):
+        j=i+BLOCK_POINTS
+        if j>n:
+            break
+        block=rows4[i:j]
+        if block[-1][1] != block[0][1]:
+            continue
+        good=True
+        for a,b in zip(block,block[1:]):
+            if b[1]!=a[1] or b[0]-a[0]!=GRID_NS:
+                good=False;break
+        if good:
+            cands.append(block)
+    return cands
+
+def bootstrap_spearman(rows4):
+    obs = spearman([r[2] for r in rows4],[r[3] for r in rows4])
+    cands=moving_block_candidates(rows4)
+    if not cands:
+        return {"rho":obs,"replicates":0,"p_boot":None,"ci95":[None,None],"candidate_blocks":0}
+    rng=random.Random(SEED)
+    sims=[]
+    n=len(rows4)
+    while len(sims)<BOOTSTRAPS:
+        sample=[]
+        while len(sample)<n:
+            sample.extend(cands[rng.randrange(len(cands))])
+        sample=sample[:n]
+        rho=spearman([r[2] for r in sample],[r[3] for r in sample])
+        if math.isfinite(rho):
+            sims.append(rho)
+        else:
+            return {"rho":obs,"replicates":len(sims),"p_boot":None,"ci95":[None,None],
+                    "candidate_blocks":len(cands),"error":"undefined bootstrap rho"}
+    p=(1+sum(r<=0 for r in sims))/(BOOTSTRAPS+1)
+    return {"rho":obs,"replicates":len(sims),"p_boot":p,
+            "ci95":[qtile(sims,.025),qtile(sims,.975)],"candidate_blocks":len(cands)}
+
+def quarter_rhos(rows4):
+    n=len(rows4)
+    out=[]
+    for k in range(4):
+        lo=math.floor(k*n/4); hi=math.floor((k+1)*n/4)
+        q=rows4[lo:hi]
+        out.append(spearman([r[2] for r in q],[r[3] for r in q]) if len(q)>=2 else math.nan)
+    return out
+
+def trimmed_rho(rows4):
+    ys=[r[3] for r in rows4]
+    lo,hi=qtile(ys,.01),qtile(ys,.99)
+    kept=[r for r in rows4 if r[3]>=lo and r[3]<=hi]
+    rho=spearman([r[2] for r in kept],[r[3] for r in kept]) if len(kept)>=2 else math.nan
+    return {"q01":lo,"q99":hi,"n":len(kept),"rho":rho}
+
+def quantile_contrast(rows4,q20,q80):
+    low=[r[3] for r in rows4 if r[2]<=q20]
+    high=[r[3] for r in rows4 if r[2]>=q80]
+    contrast=(statistics.fmean(high)-statistics.fmean(low)) if low and high else math.nan
+    return {"low_n":len(low),"high_n":len(high),"contrast_bps":contrast,
+            "low_mean_bps":statistics.fmean(low) if low else None,
+            "high_mean_bps":statistics.fmean(high) if high else None}
+
+def feature_summary(rows4):
+    return {"feature":descriptive([r[2] for r in rows4]),"target_bps":descriptive([r[3] for r in rows4]),
+            "rho":spearman([r[2] for r in rows4],[r[3] for r in rows4]) if len(rows4)>=2 else None}
+
+def analyze_market(rows, market):
+    eligible, disc_primary, hold_primary, boundary_t=split_primary(rows)
+    features={"f1":"L1_imbalance","f2":"D5_imbalance","f3":"TFI_1s"}
+    q={}
+    for f in features:
+        vals=[rows[i][f] for i in disc_primary if rows[i].get(f) is not None and math.isfinite(float(rows[i][f]))]
+        q[f]={"q20":qtile(vals,.20),"q80":qtile(vals,.80)}
+
+    result={
+        "market":market,
+        "primary_eligible_n":len(eligible),
+        "discovery_n":len(disc_primary),
+        "holdout_n":len(hold_primary),
+        "holdout_boundary_mono_ns":boundary_t,
+        "discovery_period_mono_ns":[rows[disc_primary[0]]["t"],rows[disc_primary[-1]]["t"]] if disc_primary else [None,None],
+        "holdout_period_mono_ns":[rows[hold_primary[0]]["t"],rows[hold_primary[-1]]["t"]] if hold_primary else [None,None],
+        "quantiles_from_discovery":q,
+        "feature_horizon":{}
+    }
+    d_idx=indices_by_boundary(rows,boundary_t,"discovery")
+    h_idx=indices_by_boundary(rows,boundary_t,"holdout")
+    for f,label in features.items():
+        result["feature_horizon"][label]={}
+        for h in HORIZONS_NS:
+            drows=rows_for(rows,d_idx,f,h)
+            hrows=rows_for(rows,h_idx,f,h)
+            result["feature_horizon"][label][f"{h/1e9:g}s"]={
+                "discovery":feature_summary(drows),
+                "holdout":feature_summary(hrows),
+                "missing_discovery":max(0,len(d_idx)-len(drows)),
+                "missing_holdout":max(0,len(h_idx)-len(hrows)),
+            }
+    if market==PRIMARY:
+        prows=rows_for(rows,hold_primary,"f1",PRIMARY_H_NS)
+        boot=bootstrap_spearman(prows)
+        quarters=quarter_rhos(prows)
+        trim=trimmed_rho(prows)
+        contrast=quantile_contrast(prows,q["f1"]["q20"],q["f1"]["q80"])
+        blocks=full_60s_blocks(prows)
+        hold_seconds=len(prows)*0.5
+        min_checks={
+            "primary_eligible_total":len(eligible)>=MIN_TOTAL,
+            "holdout_primary_eligible":len(prows)>=MIN_HOLDOUT,
+            "holdout_valid_seconds":hold_seconds>=MIN_HOLDOUT_SECONDS,
+            "valid_60s_blocks":blocks>=MIN_FULL_BLOCKS,
+            "four_quarters_nonempty":all(math.floor((k+1)*len(prows)/4)>math.floor(k*len(prows)/4) for k in range(4)),
+            "q20_group_holdout":contrast["low_n"]>=MIN_QUANTILE_GROUP,
+            "q80_group_holdout":contrast["high_n"]>=MIN_QUANTILE_GROUP,
+            "trimmed_holdout":trim["n"]>=MIN_TRIMMED,
+            "statistics_defined":all([
+                math.isfinite(boot["rho"]) if boot["rho"] is not None else False,
+                boot["p_boot"] is not None,
+                boot["ci95"][0] is not None,
+                math.isfinite(contrast["contrast_bps"]),
+                all(math.isfinite(x) for x in quarters),
+                math.isfinite(trim["rho"])
+            ])
+        }
+        if not all(min_checks.values()):
+            decision="INCONCLUSIVE"
+            pass_checks={}
+        else:
+            pass_checks={
+                "rho_gt_0":boot["rho"]>0,
+                "p_boot_lt_0_05":boot["p_boot"]<0.05,
+                "ci95_lower_gt_0":boot["ci95"][0]>0,
+                "q80_minus_q20_gt_0":contrast["contrast_bps"]>0,
+                "at_least_3_of_4_quarters_positive":sum(x>0 for x in quarters)>=3,
+                "trimmed_rho_gt_0":trim["rho"]>0
+            }
+            decision="PASS" if all(pass_checks.values()) else "FAIL"
+        result["confirmatory"]={
+            "holdout_rows":len(prows),
+            "holdout_valid_seconds":hold_seconds,
+            "full_nonoverlap_60s_blocks":blocks,
+            "bootstrap":boot,
+            "q20_q80":contrast,
+            "quarter_rhos":quarters,
+            "trim":trim,
+            "minimum_data_checks":min_checks,
+            "pass_checks":pass_checks,
+            "decision":decision
+        }
+    return result
+
+def make_report(results):
+    p=results["markets"][PRIMARY]
+    c=p["confirmatory"]
+    b=c["bootstrap"]
+    q=c["q20_q80"]
+    lines=[
+        "# M1A-PREREG-v1.3 Report","",
+        f"- Executor: {VERSION}",
+        f"- Protocol: {PROTOCOL} (content rules {CONTENT_PROTOCOL})",
+        f"- Freeze cutoff: {results['freeze_manifest'].get('research_cutoff_utc')}",
+        f"- Decision: **{c['decision']}**","",
+        "## Primary confirmatory HOLDOUT",
+        f"- N: {c['holdout_rows']}",
+        f"- valid observation seconds: {c['holdout_valid_seconds']}",
+        f"- non-overlapping full 60s blocks: {c['full_nonoverlap_60s_blocks']}",
+        f"- Spearman rho: {b['rho']}",
+        f"- bootstrap p(one-sided): {b['p_boot']}",
+        f"- percentile 95% CI: {b['ci95']}",
+        f"- q80-q20 contrast (bp): {q['contrast_bps']} (high N={q['high_n']}, low N={q['low_n']})",
+        f"- HOLDOUT quarter rhos: {c['quarter_rhos']}",
+        f"- signed 1%/99% trimmed rho: {c['trim']['rho']} (N={c['trim']['n']})","",
+        "## Minimum-data gate",
+        *[f"- {k}: {v}" for k,v in c["minimum_data_checks"].items()],
+        "","## PASS gate",
+        *([f"- {k}: {v}" for k,v in c["pass_checks"].items()] if c["pass_checks"] else ["- not evaluated (INCONCLUSIVE)"]),
+        "","## Boundary",
+        "This is an information-layer falsification test. It is not a trading strategy and contains no fee/P&L claim."
+    ]
+    return "\n".join(lines)+"\n"
 
 def main():
- ap=argparse.ArgumentParser();ap.add_argument('--input',required=True);ap.add_argument('--output',required=True);a=ap.parse_args();root=Path(a.input).resolve();outdir=Path(a.output).resolve();outdir.mkdir(parents=True,exist_ok=True)
- mf,errs=audit_manifest(root)
- if errs:raise SystemExit('Freeze provenance/hash audit failed: '+repr(errs))
- audit={m:Counter() for m in MARKETS};series={}
- try:
-  for m in MARKETS:series[m]=build_series(root,m,audit)
- except RuntimeError as e:
-  r={'schema':'m1a-results-v1.3','protocol':PROTOCOL,'executor_version':VERSION,'freeze_manifest':mf,'decision':'INCONCLUSIVE','integrity_error':str(e)}
-  (outdir/'results.json').write_text(json.dumps(clean(r),indent=2,sort_keys=True)+'\n',encoding='utf-8');(outdir/'report.md').write_text(f'# M1A Research Report\n\n**INCONCLUSIVE** — {e}\n',encoding='utf-8');print(json.dumps({'decision':'INCONCLUSIVE','reason':str(e)},indent=2));return
- d,h,boundary=split_primary(series[PRIMARY]);primary_matrix,qs=matrix(series[PRIMARY],d,h,boundary);primary=evaluate_primary(series[PRIMARY],d,h,boundary,qs['L1'])
- result={'schema':'m1a-results-v1.3','protocol':PROTOCOL,'content_protocol':CONTENT_PROTOCOL,'executor_version':VERSION,'freeze_manifest':mf,'predeclared':{'primary_market':PRIMARY,'exploratory_market':'BTC-USDC','grid_ms':500,'primary_feature':'L1','primary_horizon_ms':1000,'secondary_features':['D5','TFI_1s'],'secondary_horizons_ms':[500,2000,5000],'bootstrap_block_seconds':60,'bootstrap_replicates':BOOTSTRAPS,'seed':SEED},'split':{'primary_eligible_total':len(d)+len(h),'discovery_n':len(d),'holdout_n':len(h),'holdout_boundary_grid_mono_ns':None if boundary==math.inf else boundary},'discovery_feature_quantiles':qs,'audit':{'manifest_errors':[],'markets':{m:dict(audit[m]) for m in MARKETS}},'markets':{PRIMARY:primary_matrix},'primary_confirmatory':primary,'decision':primary['decision']}
- if len(series['BTC-USDC']):
-  du,hu,bu=split_primary(series['BTC-USDC']);um,_=matrix(series['BTC-USDC'],du,hu,bu);result['markets']['BTC-USDC']=um;result['exploratory_split']={'discovery_n':len(du),'holdout_n':len(hu)}
- result=clean(result);(outdir/'results.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n',encoding='utf-8');(outdir/'report.md').write_text(render_report(result),encoding='utf-8');print(json.dumps({'decision':result['decision'],'results':str(outdir/'results.json'),'report':str(outdir/'report.md')},indent=2))
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--input",required=True)
+    ap.add_argument("--output",required=True)
+    args=ap.parse_args()
+    root=Path(args.input).resolve()
+    out=Path(args.output).resolve()
+    out.mkdir(parents=True,exist_ok=True)
 
-if __name__=='__main__':main()
+    mf,errors=audit_manifest(root)
+    if errors:
+        raise SystemExit("Freeze audit failed: "+"; ".join(errors))
+
+    results={
+        "schema":"m1a-prereg-v1.3-results-v1",
+        "executor_version":VERSION,
+        "protocol":PROTOCOL,
+        "content_protocol":CONTENT_PROTOCOL,
+        "freeze_manifest":mf,
+        "audit":{},
+        "markets":{}
+    }
+    for market in MARKETS:
+        try:
+            rows,audit=build_grid(root,market)
+            results["audit"][market]=audit
+            results["markets"][market]=analyze_market(rows,market)
+        except RuntimeError as e:
+            if market==PRIMARY:
+                raise
+            results["audit"][market]={"error":str(e)}
+            results["markets"][market]={"market":market,"descriptive_status":"unavailable","error":str(e)}
+
+    results=clean_json(results)
+    (out/"results.json").write_text(json.dumps(results,indent=2,sort_keys=True,allow_nan=False)+"\n",encoding="utf-8")
+    (out/"report.md").write_text(make_report(results),encoding="utf-8")
+    print(json.dumps({"decision":results["markets"][PRIMARY]["confirmatory"]["decision"],
+                      "results":str(out/"results.json"),"report":str(out/"report.md")},indent=2))
+
+if __name__=="__main__":
+    main()
