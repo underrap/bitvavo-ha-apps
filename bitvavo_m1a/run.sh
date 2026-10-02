@@ -1,20 +1,11 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
-SOURCE="/homeassistant/bitvavo_research/event_m0"
-ROOT="/homeassistant/bitvavo_research/m1a"
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-RUN_DIR="${ROOT}/runs/${RUN_ID}"
-FROZEN="${RUN_DIR}/frozen"
-RESULTS="${RUN_DIR}/results"
 
-mkdir -p "${FROZEN}" "${RESULTS}"
-echo "M1A research-only analyzer"
-echo "Source: ${SOURCE}"
-echo "Run: ${RUN_DIR}"
-echo "Freezing dataset BEFORE analysis..."
-python3 -u /freeze.py --source "${SOURCE}" --output "${FROZEN}" --m0-version "1.0.5"
-echo "Running predeclared M1A analysis..."
-python3 -u /analyze.py --input "${FROZEN}" --output "${RESULTS}"
-echo "M1A complete."
-echo "Report: ${RESULTS}/report.md"
-echo "Machine-readable: ${RESULTS}/results.json"
+echo "M1A-PREREG-v1.3 executor branch"
+echo "STATUS: FROZEN-SPEC / EXECUTION BLOCKED"
+echo "Refusing to freeze or analyze market data until:"
+echo "  1) bitvavo_m1a v1.2.0 exactly implements protocol_v1_3.json"
+echo "  2) synthetic/fixture conformance tests pass"
+echo "  3) execution commit SHA is pinned"
+echo "  4) M1A_FREEZE_001 provenance is complete"
+exit 64
