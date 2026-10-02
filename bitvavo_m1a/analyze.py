@@ -136,146 +136,196 @@ def build_series(root,market,audit):
  audit[market].update({'crossed_grids':crossed,'negative_size_updates':neg_size,'nonpositive_price_updates':bad_price,'nonce_anomalies_replay':nonce_anom,'invalid_grids':invalid_grids,'valid_grids':len(s)-invalid_grids,'valid_analysis_seconds':(len(s)-invalid_grids)*0.5,'grid_points':len(s),'same_bookstate_consecutive_grids':repeated,'same_bookstate_fraction':repeated/len(s) if len(s) else None,'zero_tradeflow_grids':zero_trade,'zero_tradeflow_fraction':zero_trade/len(s) if len(s) else None,'first_checkpoint_mono_ns':first_cp_t,'checkpoint_count':len(cps)})
  return s
 
-def bins_for(vals):
- qs=[qtile(vals,p) for p in (.1,.3,.7,.9)];return qs
-
-def block_boot_diff(times,values,groups):
- rows=[(t,v,g) for t,v,g in zip(times,values,groups) if math.isfinite(v) and g in (4,0)]
- if not rows:return {'n':0,'mean_diff':None,'ci95':[None,None]}
- blocks={};t0=rows[0][0]
- for t,v,g in rows:
-  d=blocks.setdefault((t-t0)//BLOCK_NS,[0.,0,0.,0])
-  if g==4:d[0]+=v;d[1]+=1
-  else:d[2]+=v;d[3]+=1
- bs=list(blocks.values())
- def calc(sample):
-  st=nt=sb=nb=0
-  for d in sample:st+=d[0];nt+=d[1];sb+=d[2];nb+=d[3]
-  return st/nt-sb/nb if nt and nb else math.nan
- obs=calc(bs);rng=random.Random(SEED);sims=[]
- if len(bs)>=2:
-  for _ in range(BOOTSTRAPS):
-   x=calc([bs[rng.randrange(len(bs))] for _ in range(len(bs))])
-   if math.isfinite(x):sims.append(x)
- return {'n':len(rows),'blocks':len(bs),'mean_diff':obs,'ci95':[qtile(sims,.025),qtile(sims,.975)] if sims else [None,None]}
-
-def analyze_market(s,market):
- out={'market':market,'grid_points':len(s),'horizons':{},'features':{}};fa={'F1_L1':s.f1,'F2_L5':s.f2,'F3_trade_1s':s.f3};base=[i for i in range(len(s)) if s.valid[i]];defs={}
- for fn,arr in fa.items():
-  qs=bins_for(arr[i] for i in base if math.isfinite(arr[i]));defs[fn]=qs;out['features'][fn]={'distribution':stats([arr[i] for i in base if math.isfinite(arr[i])]),'quantiles_10_30_70_90':qs}
- for h in HORIZONS_NS:
-  step=h//GRID_NS;hk=f'{h/1e9:g}s';hout={}
-  for fn,arr in fa.items():
-   qs=defs[fn]
-   def grp(v):
-    if v<=qs[0]:return 0
-    if v<=qs[1]:return 1
-    if v<qs[2]:return 2
-    if v<qs[3]:return 3
-    return 4
-   vals=[];groups=[];times=[];execs=[];down=[]
-   for i in range(len(s)-step):
-    j=i+step
-    if not s.valid[i] or not s.valid[j] or s.epoch[i]!=s.epoch[j] or any(not s.valid[k] for k in range(i,j+1)):continue
-    v=arr[i]
-    if not math.isfinite(v):continue
-    mid0=(s.bid[i]+s.ask[i])/2;mid1=(s.bid[j]+s.ask[j])/2
-    vals.append(mid1/mid0-1);execs.append(s.bid[j]/s.ask[i]-1);down.append(s.bid[i]/s.ask[j]-1);groups.append(grp(v));times.append(s.t[i])
-   gs=[]
-   for g in range(5):
-    gs.append({'group':g,'future_mid_return':stats([v for v,x in zip(vals,groups) if x==g]),'executable_buy_markout':stats([v for v,x in zip(execs,groups) if x==g]),'downward_sell_then_buy_response':stats([v for v,x in zip(down,groups) if x==g])})
-   boot=block_boot_diff(times,vals,groups);top_exec=[v for v,g in zip(execs,groups) if g==4];top_rows=[(t,v) for t,v,g in zip(times,execs,groups) if g==4 and math.isfinite(v)]
-   blocks={}
-   if top_rows:
-    t0=top_rows[0][0]
-    for t,v in top_rows:
-     d=blocks.setdefault((t-t0)//BLOCK_NS,[0.,0]);d[0]+=v;d[1]+=1
-   rng=random.Random(SEED+int(h//GRID_NS));sims=[];bl=list(blocks.values())
-   if len(bl)>=2:
-    for _ in range(BOOTSTRAPS):
-     samp=[bl[rng.randrange(len(bl))] for _ in range(len(bl))];sims.append(sum(x[0] for x in samp)/sum(x[1] for x in samp))
-   means=[g['future_mid_return'].get('mean',math.nan) for g in gs];adj=[means[k+1]>=means[k] for k in range(4) if math.isfinite(means[k]) and math.isfinite(means[k+1])]
-   boot['mean_diff_bps']=boot['mean_diff']*10000 if boot['mean_diff'] is not None else None
-   if boot['ci95'][0] is not None:boot['ci95_bps']=[boot['ci95'][0]*10000,boot['ci95'][1]*10000]
-   hout[fn]={'n':len(vals),'potential_grid_points':max(0,len(s)-step),'excluded_invalid_or_resync':max(0,len(s)-step)-len(vals),'groups':gs,'top_minus_bottom_mid_return':boot,'top10_executable_markout':stats(top_exec),'top10_executable_bootstrap_ci95':[qtile(sims,.025),qtile(sims,.975)] if sims else [None,None],'top10_executable_mean_bps':statistics.fmean(top_exec)*10000 if top_exec else None,'monotone_adjacent_fraction':sum(adj)/len(adj) if adj else None}
-  out['horizons'][hk]=hout
+def rankdata(xs):
+ order=sorted(range(len(xs)),key=xs.__getitem__);out=[0.0]*len(xs);i=0
+ while i<len(order):
+  j=i+1;v=xs[order[i]]
+  while j<len(order) and xs[order[j]]==v:j+=1
+  r=(i+1+j)/2
+  for k in range(i,j):out[order[k]]=r
+  i=j
  return out
 
-def subset_contrast(s,feature,h,selector,trim=None):
- step=h//GRID_NS;arr={'F1_L1':s.f1,'F2_L5':s.f2,'F3_trade_1s':s.f3}[feature]
- idx=[i for i in range(len(s)-step) if selector(i) and s.valid[i] and s.valid[i+step] and s.epoch[i]==s.epoch[i+step] and all(s.valid[k] for k in range(i,i+step+1)) and math.isfinite(arr[i])]
- if not idx:return None
- q10=qtile((arr[i] for i in idx),.1);q90=qtile((arr[i] for i in idx),.9);rows=[]
- for i in idx:rows.append((arr[i],((s.bid[i+step]+s.ask[i+step])/2)/((s.bid[i]+s.ask[i])/2)-1))
- if trim is not None:
-  c=qtile((abs(r) for _,r in rows),trim);rows=[x for x in rows if abs(x[1])<=c]
- top=[r for f,r in rows if f>=q90];bot=[r for f,r in rows if f<=q10]
- return statistics.fmean(top)-statistics.fmean(bot) if top and bot else None
+def pearson(x,y):
+ if len(x)<2 or len(x)!=len(y):return math.nan
+ mx=statistics.fmean(x);my=statistics.fmean(y);sx=sy=sxy=0.0
+ for a,b in zip(x,y):
+  da=a-mx;db=b-my;sx+=da*da;sy+=db*db;sxy+=da*db
+ return sxy/math.sqrt(sx*sy) if sx>0 and sy>0 else math.nan
 
-def robustness(s):
- n=len(s);mid=n//2;per=Counter();t0=s.t[0] if n else 0
- for i in range(1,n):
-  delta=s.book_version[i]-s.book_version[i-1]
-  if delta>0:per[(s.t[i]-t0)//BLOCK_NS]+=delta
- med=statistics.median(per.values()) if per else 0;active={k:v>med for k,v in per.items()};out={'active_rule':f'60s book-update count > median ({med})','tests':{}}
- for f in ('F1_L1','F2_L5','F3_trade_1s'):
-  out['tests'][f]={}
+def spearman(x,y):
+ rows=[(float(a),float(b)) for a,b in zip(x,y) if math.isfinite(float(a)) and math.isfinite(float(b))]
+ if len(rows)<2:return math.nan
+ xx=[z[0] for z in rows];yy=[z[1] for z in rows]
+ return pearson(rankdata(xx),rankdata(yy))
+
+def describe(xs):
+ a=[float(x) for x in xs if math.isfinite(float(x))]
+ if not a:return {'n':0,'mean':None,'median':None,'std':None}
+ return {'n':len(a),'mean':statistics.fmean(a),'median':statistics.median(a),'std':statistics.stdev(a) if len(a)>1 else 0.0}
+
+def feature_arr(s,name):
+ return {'L1':s.f1,'D5':s.f2,'TFI_1s':s.f3}[name]
+
+def target_bps(s,i,h):
+ step=h//GRID_NS;j=i+step
+ if j>=len(s):return None
+ if s.t[j]!=s.t[i]+h or not s.valid[i] or not s.valid[j] or s.epoch[i]!=s.epoch[j]:return None
+ if any(not s.valid[k] for k in range(i,j+1)):return None
+ m0=(s.bid[i]+s.ask[i])/2;m1=(s.bid[j]+s.ask[j])/2
+ return 10000*(m1/m0-1)
+
+def primary_eligible(s):
+ out=[]
+ for i in range(len(s)):
+  if not s.valid[i] or not math.isfinite(s.f1[i]):continue
+  if target_bps(s,i,1_000_000_000) is not None:out.append(i)
+ return out
+
+def split_primary(s):
+ ids=primary_eligible(s);ids.sort(key=lambda i:s.t[i]);nd=math.floor(.60*len(ids))
+ d=ids[:nd];h=ids[nd:];boundary=s.t[h[0]] if h else math.inf
+ return d,h,boundary
+
+def rows_for(s,feature,h,part,boundary):
+ arr=feature_arr(s,feature);rows=[]
+ for i in range(len(s)):
+  if part=='DISCOVERY' and s.t[i]>=boundary:continue
+  if part=='HOLDOUT' and s.t[i]<boundary:continue
+  if not s.valid[i] or not math.isfinite(arr[i]):continue
+  y=target_bps(s,i,h)
+  if y is None or not math.isfinite(y):continue
+  rows.append((int(s.t[i]),int(s.epoch[i]),float(arr[i]),float(y),i))
+ return rows
+
+def elapsed_seconds(rows):
+ by={}
+ for t,e,*_ in rows:
+  z=by.setdefault(e,[t,t]);z[0]=min(z[0],t);z[1]=max(z[1],t)
+ return sum((b-a+GRID_NS)/1e9 for a,b in by.values())
+
+def nonoverlap_blocks(rows):
+ by={}
+ for t,e,*_ in rows:by.setdefault(e,[]).append(t)
+ n=0
+ for ts in by.values():
+  ts.sort()
+  if not ts:continue
+  start=ts[0];last=ts[-1]
+  while start+BLOCK_NS<=last+GRID_NS:
+   lo=bisect.bisect_left(ts,start);hi=bisect.bisect_left(ts,start+BLOCK_NS)
+   if hi-lo>=2:n+=1
+   start+=BLOCK_NS
+ return n
+
+def moving_blocks(rows):
+ by={}
+ for p,r in enumerate(rows):by.setdefault(r[1],[]).append(p)
+ out=[]
+ for pos in by.values():
+  times=[rows[p][0] for p in pos]
+  for a,p in enumerate(pos):
+   t0=rows[p][0];hi=bisect.bisect_left(times,t0+BLOCK_NS,lo=a)
+   if hi<len(times) and times[hi]>=t0+BLOCK_NS:
+    block=pos[a:hi]
+    if len(block)>=2:out.append(block)
+ return out
+
+def bootstrap_primary(rows):
+ obs=spearman([r[2] for r in rows],[r[3] for r in rows]);blocks=moving_blocks(rows)
+ if not math.isfinite(obs) or not blocks:return {'rho':clean(obs),'replicates':0,'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(blocks)}
+ rng=random.Random(SEED);sims=[];n=len(rows)
+ for _ in range(BOOTSTRAPS):
+  pick=[]
+  while len(pick)<n:pick.extend(blocks[rng.randrange(len(blocks))])
+  pick=pick[:n];rho=spearman([rows[p][2] for p in pick],[rows[p][3] for p in pick])
+  if math.isfinite(rho):sims.append(rho)
+ if len(sims)!=BOOTSTRAPS:return {'rho':obs,'replicates':len(sims),'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(blocks)}
+ return {'rho':obs,'replicates':len(sims),'p_boot':(1+sum(x<=0 for x in sims))/(BOOTSTRAPS+1),'ci95':[qtile(sims,.025),qtile(sims,.975)],'moving_block_candidates':len(blocks)}
+
+def quarter_rows(rows):
+ q,r=divmod(len(rows),4);out=[];at=0
+ for k in range(4):
+  n=q+(1 if k<r else 0);out.append(rows[at:at+n]);at+=n
+ return out
+
+def contrast(rows,q20,q80):
+ lo=[r[3] for r in rows if r[2]<=q20];hi=[r[3] for r in rows if r[2]>=q80]
+ return {'value_bps':statistics.fmean(hi)-statistics.fmean(lo) if lo and hi else None,'low_n':len(lo),'high_n':len(hi)}
+
+def trim_primary(rows):
+ ys=[r[3] for r in rows]
+ if not ys:return {'q01_bps':None,'q99_bps':None,'n':0,'rho':None}
+ q01=qtile(ys,.01);q99=qtile(ys,.99);keep=[r for r in rows if q01<=r[3]<=q99]
+ return {'q01_bps':q01,'q99_bps':q99,'n':len(keep),'rho':clean(spearman([r[2] for r in keep],[r[3] for r in keep]))}
+
+def feature_quantiles(s,dids):
+ out={}
+ for f in ('L1','D5','TFI_1s'):
+  arr=feature_arr(s,f);vals=[arr[i] for i in dids if math.isfinite(arr[i])]
+  out[f]={'q20':clean(qtile(vals,.20)),'q80':clean(qtile(vals,.80)),'n':len(vals)}
+ return out
+
+def matrix(s,dids,hids,boundary):
+ qs=feature_quantiles(s,dids);out={}
+ for f in ('L1','D5','TFI_1s'):
+  out[f]={'discovery_quantiles':qs[f],'horizons':{}}
   for h in HORIZONS_NS:
-   hk=f'{h/1e9:g}s';out['tests'][f][hk]={'first_half':subset_contrast(s,f,h,lambda i:i<mid),'second_half':subset_contrast(s,f,h,lambda i:i>=mid),'quiet':subset_contrast(s,f,h,lambda i:not active.get((s.t[i]-t0)//BLOCK_NS,False)),'active':subset_contrast(s,f,h,lambda i:active.get((s.t[i]-t0)//BLOCK_NS,False)),'trim_largest_abs_1pct':subset_contrast(s,f,h,lambda i:True,.99)}
- return out
+   hk=f'{h/1e9:g}s';d=rows_for(s,f,h,'DISCOVERY',boundary);ho=rows_for(s,f,h,'HOLDOUT',boundary)
+   out[f]['horizons'][hk]={
+    'DISCOVERY':{'n':len(d),'feature':describe(r[2] for r in d),'target_bps':describe(r[3] for r in d),'spearman_rho':clean(spearman([r[2] for r in d],[r[3] for r in d]))},
+    'HOLDOUT':{'n':len(ho),'feature':describe(r[2] for r in ho),'target_bps':describe(r[3] for r in ho),'spearman_rho':clean(spearman([r[2] for r in ho],[r[3] for r in ho]))}
+   }
+ return out,qs
 
-def classify(primary,rob):
- qualifying=[];executable=[]
- for hk,h in primary['horizons'].items():
-  for f,r in h.items():
-   b=r['top_minus_bottom_mid_return'];ci=b['ci95'];mono=r['monotone_adjacent_fraction'];rr=rob['tests'][f][hk]
-   stable=all(rr[k] is not None and rr[k]>0 for k in ('first_half','second_half','trim_largest_abs_1pct'))
-   info=b['mean_diff'] is not None and b['mean_diff']>0 and ci[0] is not None and ci[0]>0 and mono is not None and mono>=.75 and stable
-   if info:
-    qualifying.append({'feature':f,'horizon':hk,'contrast':b['mean_diff'],'ci95':ci,'monotonicity':mono});eci=r['top10_executable_bootstrap_ci95'];em=r['top10_executable_markout'].get('mean')
-    if em is not None and em>0 and eci[0] is not None and eci[0]>0:executable.append({'feature':f,'horizon':hk,'mean':em,'ci95':eci})
- if executable:return {'class':'C','label':'predictive + pre-fee executable indication','qualifying_information':qualifying,'qualifying_executable':executable}
- if qualifying:return {'class':'B','label':'predictive information, economics not established','qualifying_information':qualifying,'qualifying_executable':[]}
- return {'class':'A','label':'no usable indication under predeclared operational criteria','qualifying_information':[],'qualifying_executable':[]}
+def evaluate_primary(s,dids,hids,boundary,q):
+ rows=rows_for(s,'L1',1_000_000_000,'HOLDOUT',boundary);expected=set(hids);actual={r[4] for r in rows}
+ c=contrast(rows,q['q20'],q['q80']) if q.get('q20') is not None and q.get('q80') is not None else {'value_bps':None,'low_n':0,'high_n':0}
+ quarters=quarter_rows(rows);qr=[clean(spearman([r[2] for r in z],[r[3] for r in z])) for z in quarters];tr=trim_primary(rows)
+ checks={
+  'primary_population_match':expected==actual,
+  'primary_eligible_total_at_least_3600':len(dids)+len(hids)>=3600,
+  'holdout_primary_eligible_at_least_1440':len(rows)>=1440,
+  'holdout_valid_seconds_at_least_1800':elapsed_seconds(rows)>=1800,
+  'at_least_10_valid_60s_blocks':nonoverlap_blocks(rows)>=10,
+  'all_four_quarters_nonempty':all(len(z)>=1 for z in quarters),
+  'q20_holdout_group_at_least_30':c['low_n']>=30,
+  'q80_holdout_group_at_least_30':c['high_n']>=30,
+  'trim_leaves_at_least_1000':tr['n']>=1000
+ }
+ structural=all(checks.values())
+ boot=bootstrap_primary(rows) if structural else {'rho':clean(spearman([r[2] for r in rows],[r[3] for r in rows])),'replicates':0,'p_boot':None,'ci95':[None,None],'moving_block_candidates':len(moving_blocks(rows))}
+ numerical=boot['rho'] is not None and boot['replicates']==BOOTSTRAPS and boot['p_boot'] is not None and boot['ci95'][0] is not None and c['value_bps'] is not None
+ checks['confirmatory_statistics_numerically_defined']=numerical
+ if not all(checks.values()):
+  decision='INCONCLUSIVE';conds=None;failed=[k for k,v in checks.items() if not v]
+ else:
+  conds={'rho_gt_0':boot['rho']>0,'p_boot_lt_0_05':boot['p_boot']<.05,'ci95_lower_gt_0':boot['ci95'][0]>0,'q80_minus_q20_gt_0':c['value_bps']>0,'at_least_3_of_4_quarter_rhos_gt_0':sum(x is not None and x>0 for x in qr)>=3,'trimmed_rho_gt_0':tr['rho'] is not None and tr['rho']>0}
+  decision='PASS' if all(conds.values()) else 'FAIL';failed=[k for k,v in conds.items() if not v]
+ return {'population_n':len(rows),'valid_chronological_seconds':elapsed_seconds(rows),'distinct_valid_60s_blocks':nonoverlap_blocks(rows),'bootstrap':boot,'q80_minus_q20':c,'quarter_rhos':qr,'trim':tr,'minimum_data_checks':checks,'pass_conditions':conds,'failed_conditions':failed,'decision':decision}
+
+def render_report(r):
+ p=r['primary_confirmatory'];lines=['# M1A Research Report','',f'- Protocol: {r["protocol"]}',f'- Executor: {r["executor_version"]}',f'- Freeze cutoff: {r["freeze_manifest"].get("research_cutoff_utc")}',f'- Decision: **{p["decision"]}**','','## Primary confirmatory gate',f'- HOLDOUT N: {p["population_n"]}',f'- Spearman rho: {p["bootstrap"]["rho"]}',f'- one-sided bootstrap p: {p["bootstrap"]["p_boot"]}',f'- percentile 95% CI: {p["bootstrap"]["ci95"]}',f'- q80-q20 contrast (bp): {p["q80_minus_q20"]["value_bps"]}',f'- quarter rhos: {p["quarter_rhos"]}',f'- trimmed rho: {p["trim"]["rho"]}','','## Minimum-data / integrity gates']
+ for k,v in p['minimum_data_checks'].items():lines.append(f'- {k}: {v}')
+ lines+=['','## Audit']
+ for m,a in r['audit']['markets'].items():lines.append(f'- {m}: {a}')
+ lines+=['','## Interpretation boundary','M1A tests event-level information only. It is not a trading strategy and contains no fee/P&L conclusion.']
+ return '\n'.join(lines)+'\n'
 
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--input',required=True);ap.add_argument('--output',required=True);a=ap.parse_args();root=Path(a.input).resolve();outdir=Path(a.output).resolve();outdir.mkdir(parents=True,exist_ok=True)
- mf,errs=audit_manifest(root);audit={m:Counter() for m in MARKETS}
- results={'schema':'m1a-results-v1','analyzer_version':VERSION,'freeze_manifest':mf,'predeclared':{'primary_market':PRIMARY,'exploratory_market':'BTC-USDC','grid_ms':500,'trade_lookback_ms':1000,'depth_levels':5,'horizons_ms':[500,1000,2000,5000],'bootstrap_block_seconds':60,'bootstrap_replicates':BOOTSTRAPS,'seed':SEED,'classification_rule':'Information qualifies only if top-bottom mean mid-return >0, 95% block-bootstrap CI lower bound >0, >=3/4 adjacent bin means nondecreasing, and contrast remains >0 in first half, second half, and after removing largest 1% absolute returns. C additionally requires top-decile ask-to-future-bid mean >0 with 95% block-bootstrap CI lower bound >0.'},'audit':{'manifest_errors':errs,'markets':{}},'markets':{}}
- if errs:raise SystemExit('Freeze hash audit failed: '+repr(errs))
- series={}
- for m in MARKETS:series[m]=build_series(root,m,audit);results['audit']['markets'][m]=dict(audit[m]);results['markets'][m]=analyze_market(series[m],m)
- rob=robustness(series[PRIMARY]);results['robustness_primary']=rob;results['classification']=classify(results['markets'][PRIMARY],rob);results=clean(results)
- (outdir/'results.json').write_text(json.dumps(results,indent=2,sort_keys=True,allow_nan=False)+'\n',encoding='utf-8')
- c=results['classification'];rawmeta=mf['files']['raw_events.jsonl']
- def fmt(v,n=4):
-  return 'n/a' if v is None else f'{v:.{n}f}'
- lines=['# M1A Research Report','',
-  '## 1. Dataset freeze',
-  f'- Cutoff: {mf["research_cutoff_utc"]}',
-  f'- Raw receive UTC ns range: {rawmeta.get("first_utc_ns")} .. {rawmeta.get("last_utc_ns")}',
-  f'- Raw events: {rawmeta["records"]}; M0={mf.get("m0_version")}; analyzer={VERSION}.',
-  '- Frozen file SHA-256 hashes are recorded in freeze_manifest.json; post-cutoff M0 data is not read.',
-  '',
-  '## 2. Valid analysis time and exclusions']
- for m in MARKETS:
-  x=results['audit']['markets'][m];lines.append(f'- {m}: grid={x["grid_points"]}, valid={x["valid_grids"]} ({fmt(x["valid_analysis_seconds"],1)}s), invalid={x["invalid_grids"]}, checkpoints={x["checkpoint_count"]}, same-book-state fraction={fmt(x["same_bookstate_fraction"],3)}, zero-F3 fraction={fmt(x["zero_tradeflow_fraction"],3)}.')
- lines+=['','## 3. Data-quality audit']
- for m in MARKETS:
-  x=results['audit']['markets'][m];lines.append(f'- {m}: crossed={x["crossed_grids"]}; negative sizes={x["negative_size_updates"]}; nonpositive prices={x["nonpositive_price_updates"]}; replay nonce anomalies={x["nonce_anomalies_replay"]}; monotonic regressions={x["monotonic_regressions"]}.')
- lines+=['','## 4. Feature distributions']
- for m in MARKETS:
-  lines.append(f'### {m}')
-  for fn,z in results['markets'][m]['features'].items():lines.append(f'- {fn}: N={z["distribution"]["n"]}; q10/q30/q70/q90={z["quantiles_10_30_70_90"]}.')
- lines+=['','## 5–10. Feature/horizon results, contrasts, executable markouts and bootstrap uncertainty']
- for m in MARKETS:
-  lines+=['',f'### {m}' + (' (PRIMARY)' if m==PRIMARY else ' (EXPLORATORY)'),'| Feature | Horizon | N | Excluded | Top-bottom mid (bps) | 95% block CI (bps) | Monotone | Top10 ask→future-bid (bps) | Bottom10 downward response (bps) |','|---|---:|---:|---:|---:|---|---:|---:|---:|']
-  for hk,h in results['markets'][m]['horizons'].items():
-   for fn,z in h.items():
-    b=z['top_minus_bottom_mid_return'];ci=b.get('ci95_bps',[None,None]);d0=z["groups"][0]["downward_sell_then_buy_response"].get("mean");lines.append(f'| {fn} | {hk} | {z["n"]} | {z["excluded_invalid_or_resync"]} | {fmt(b.get("mean_diff_bps"))} | [{fmt(ci[0])}, {fmt(ci[1])}] | {fmt(z["monotone_adjacent_fraction"],2)} | {fmt(z["top10_executable_mean_bps"])} | {fmt(d0*10000 if d0 is not None else None)} |')
- lines+=['','## 11. BTC-EUR robustness',f'- Activity split: {results["robustness_primary"]["active_rule"]}','| Feature | Horizon | First half bps | Second half bps | Quiet bps | Active bps | Trim 1% bps |','|---|---:|---:|---:|---:|---:|---:|']
- for fn,hs in results['robustness_primary']['tests'].items():
-  for hk,z in hs.items():lines.append(f'| {fn} | {hk} | {fmt(z["first_half"]*10000 if z["first_half"] is not None else None)} | {fmt(z["second_half"]*10000 if z["second_half"] is not None else None)} | {fmt(z["quiet"]*10000 if z["quiet"] is not None else None)} | {fmt(z["active"]*10000 if z["active"] is not None else None)} | {fmt(z["trim_largest_abs_1pct"]*10000 if z["trim_largest_abs_1pct"] is not None else None)} |')
- lines+=['','## 12. BTC-USDC interpretation','BTC-USDC is exploratory only and never drives the M1A pass/fail classification. Sparse trade flow must not be interpreted as proof of no edge.','','## 13. Classification',f'**{c["class"]} — {c["label"]}**','',f'Qualifying information effects: {c["qualifying_information"] or "none"}.',f'Qualifying executable indications: {c["qualifying_executable"] or "none"}.','','## Interpretation boundary','This is an information-layer falsification test, not a trading strategy and not evidence of net profitability after fees/friction. No optimized thresholds or ML models are produced.']
- (outdir/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8');print(json.dumps({'results':str(outdir/'results.json'),'report':str(outdir/'report.md'),'classification':c},indent=2))
+ mf,errs=audit_manifest(root)
+ if errs:raise SystemExit('Freeze provenance/hash audit failed: '+repr(errs))
+ audit={m:Counter() for m in MARKETS};series={}
+ try:
+  for m in MARKETS:series[m]=build_series(root,m,audit)
+ except RuntimeError as e:
+  r={'schema':'m1a-results-v1.3','protocol':PROTOCOL,'executor_version':VERSION,'freeze_manifest':mf,'decision':'INCONCLUSIVE','integrity_error':str(e)}
+  (outdir/'results.json').write_text(json.dumps(clean(r),indent=2,sort_keys=True)+'\n',encoding='utf-8');(outdir/'report.md').write_text(f'# M1A Research Report\n\n**INCONCLUSIVE** — {e}\n',encoding='utf-8');print(json.dumps({'decision':'INCONCLUSIVE','reason':str(e)},indent=2));return
+ d,h,boundary=split_primary(series[PRIMARY]);primary_matrix,qs=matrix(series[PRIMARY],d,h,boundary);primary=evaluate_primary(series[PRIMARY],d,h,boundary,qs['L1'])
+ result={'schema':'m1a-results-v1.3','protocol':PROTOCOL,'content_protocol':CONTENT_PROTOCOL,'executor_version':VERSION,'freeze_manifest':mf,'predeclared':{'primary_market':PRIMARY,'exploratory_market':'BTC-USDC','grid_ms':500,'primary_feature':'L1','primary_horizon_ms':1000,'secondary_features':['D5','TFI_1s'],'secondary_horizons_ms':[500,2000,5000],'bootstrap_block_seconds':60,'bootstrap_replicates':BOOTSTRAPS,'seed':SEED},'split':{'primary_eligible_total':len(d)+len(h),'discovery_n':len(d),'holdout_n':len(h),'holdout_boundary_grid_mono_ns':None if boundary==math.inf else boundary},'discovery_feature_quantiles':qs,'audit':{'manifest_errors':[],'markets':{m:dict(audit[m]) for m in MARKETS}},'markets':{PRIMARY:primary_matrix},'primary_confirmatory':primary,'decision':primary['decision']}
+ if len(series['BTC-USDC']):
+  du,hu,bu=split_primary(series['BTC-USDC']);um,_=matrix(series['BTC-USDC'],du,hu,bu);result['markets']['BTC-USDC']=um;result['exploratory_split']={'discovery_n':len(du),'holdout_n':len(hu)}
+ result=clean(result);(outdir/'results.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=False)+'\n',encoding='utf-8');(outdir/'report.md').write_text(render_report(result),encoding='utf-8');print(json.dumps({'decision':result['decision'],'results':str(outdir/'results.json'),'report':str(outdir/'report.md')},indent=2))
+
 if __name__=='__main__':main()
