@@ -1,66 +1,78 @@
 # Bitvavo M1A — Same-Venue Microstructure Information Test
 
-Research-only one-shot Home Assistant app. It never authenticates to Bitvavo and never places orders.
+Research-only executor for **M1A-PREREG-v1.3**. It never authenticates to Bitvavo and never places orders.
 
-## Purpose
-Falsify or support the hypothesis that causally received Bitvavo microstructure contains information about future BTC-EUR price movement before building a strategy.
+## Status
 
-Primary market: BTC-EUR. BTC-USDC is exploratory only.
+`FROZEN-SPEC / EXECUTION BLOCKED`
 
-## Frozen design
-Before analysis, `freeze.py` records a UTC cutoff and copies only records received before that cutoff into a new immutable run directory. SHA-256 hashes are stored in `freeze_manifest.json`. M0 continues collecting after the cutoff; post-cutoff events are untouched future validation data.
+The executor implementation lives on the dedicated branch, but real M1A market data must not be analyzed until the execution commit and `M1A_FREEZE_001` provenance are pinned and the pre-run audit passes.
 
-M1A uses:
-- local monotonic receive time as the causal clock;
-- 500 ms decision grid;
-- F1 L1 normalized size imbalance;
-- F2 first-5-level normalized depth imbalance;
-- F3 previous-1000-ms taker buy/sell volume imbalance;
-- horizons 0.5s, 1s, 2s, 5s;
-- future mid return, current ask→future bid pre-fee markout, and downward sell→future-buy response;
-- fixed 10/30/70/90% feature quantiles;
-- 60-second time-block bootstrap, 1000 deterministic replicates;
-- first/second-half, active/quiet and top-1%-return-trim robustness checks.
+## Frozen research design
 
-No ML, threshold search, indicator search, fee optimization or strategy construction.
+Content rules are identical to `M1A-PREREG-v1.2`.
 
-## Required M0 version
-M0 **1.0.5 or later** is required. Earlier M0 versions did not persist the full reconstructed order-book checkpoint needed to reproduce absolute L1/L5 sizes.
+Primary:
+- BTC-EUR
+- L1 normalized book imbalance
+- 1-second future mid-price markout
+- Spearman rho on untouched HOLDOUT
 
-Historical pre-checkpoint raw book deltas remain preserved but are intentionally not used for F1/F2.
+Secondary only:
+- depth-5 imbalance
+- signed 1-second trade-flow imbalance
+- 0.5s, 2s and 5s horizons
+- BTC-USDC descriptive only
 
-## Validity rules
-A persisted checkpoint opens a valid book interval. Connect, disconnect, duplicate/stale/forward nonce anomaly, legacy nonce gap, resync failure or exception closes validity until a later checkpoint. Forecast windows crossing invalid grid points are excluded.
+Causal rules:
+- local monotonic receive time
+- 500ms decision grid
+- no interpolation
+- reconnect/restart/book invalidation is a hard segment boundary
+- M0 1.0.5 persisted reconstructed-book checkpoints are required
 
-The analyzer refuses a frozen dataset whose monotonic receive clock regresses. That protects against silently combining data across a host reboot without an explicit monotonic epoch.
+Discovery/Holdout:
+- primary-eligible BTC-EUR observations
+- first 60% DISCOVERY
+- final 40% HOLDOUT
+- DISCOVERY freezes q20/q80 thresholds
+- HOLDOUT is opened once
 
-## Output
-Each manual run creates:
-`/config/bitvavo_research/m1a/runs/<UTC_RUN_ID>/`
+Confirmatory bootstrap:
+- moving-block bootstrap
+- 60-second blocks
+- 10,000 resamples
+- seed 20261002
+- percentile 95% CI
+- one-sided p = `(1 + count(rho_star <= 0)) / 10001`
 
-with:
-- `frozen/` immutable JSONL copies + freeze manifest/hashes;
-- `results/results.json` complete machine-readable analysis;
-- `results/report.md` compact human report.
+PASS requires all frozen conditions:
+1. HOLDOUT rho > 0
+2. p < 0.05
+3. percentile CI lower bound > 0
+4. q80-q20 contrast > 0
+5. at least 3 of 4 HOLDOUT quarter rhos > 0
+6. signed 1%/99% trimmed rho > 0
 
-## Classification
-The analyzer operationalizes the Supervisor's qualitative A/B/C criteria before seeing real M1A results.
+Minimum-data failure yields `INCONCLUSIVE`, never PASS/FAIL.
 
-An information effect qualifies only when:
-1. top-decile minus bottom-decile future-mid response is positive;
-2. the 95% 60s block-bootstrap interval is above zero;
-3. at least 3 of 4 adjacent conditional-bin means are nondecreasing;
-4. the contrast stays positive in first half, second half, and after removing the 1% largest absolute future returns.
+## Safety gate
 
-C additionally requires positive top-decile ask→future-bid mean markout with its 95% block-bootstrap interval above zero.
+`run.sh` intentionally refuses real execution while provenance is incomplete.
 
-This is intentionally conservative and is not a profitability claim. Fees/friction are not included.
+Before RUN, pin:
+- exact execution commit SHA
+- executor version 1.2.0
+- `M1A_FREEZE_001`
+- research cutoff
+- freeze manifest path + SHA-256
+- raw source paths + SHA-256
+- first/last event UTC
+- M0 1.0.5 provenance/capability
+- passing protocol-conformance tests
 
-## Run behavior
-The Home Assistant app is `startup: once` and `boot: manual_only`. Starting it manually creates exactly one frozen run and exits. Do not enable watchdog or start-on-boot.
+No M1A result may be inspected before this gate is complete.
 
-## Audit limitations
-- Standard Bitvavo book-event `timestamp` is not used as the decision clock.
-- Quantile ties can expand a group beyond nominal 10/20/40/20/10%; actual N is always reported.
-- BTC-USDC must not drive M1A pass/fail.
-- A result from a short capture can be statistically weak despite many overlapping 500ms grid points; bootstrap block count and robustness splits matter more than raw N.
+## Tests
+
+Tests use synthetic/fixture data only. They must not read the real M0 research dataset.
