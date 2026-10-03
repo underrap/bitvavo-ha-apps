@@ -12,6 +12,7 @@ def good_gate(**overrides):
         market_trading=True,read_permission=True,trade_permission=True,
         withdraw_permission=False,exposure_cap_configured=True,
         order_cap_configured=True,kill_switch_tested=True,
+        resting_orders_possible=True,cancel_on_disconnect_ready=True,
     )
     d.update(overrides)
     return LiveGate(**d)
@@ -26,11 +27,17 @@ for field in (
     "schema_current","restart_reconciled","balances_reconciled","orders_reconciled",
     "no_unknown_orders","no_unsettled_fills","market_rules_loaded","fees_loaded",
     "market_trading","read_permission","trade_permission","exposure_cap_configured",
-    "order_cap_configured","kill_switch_tested",
+    "order_cap_configured","kill_switch_tested","cancel_on_disconnect_ready",
 ):
     bad=good_gate(**{field:False})
     assert not bad.ready,(field,bad.failures())
     assert startup_state(bad,configured_mode="LIVE")==RuntimeState.RECOVERING
+
+# Cancel-on-disconnect is conditionally required only when resting orders can exist.
+assert good_gate(resting_orders_possible=False,cancel_on_disconnect_ready=False).ready
+bad_cod=good_gate(resting_orders_possible=True,cancel_on_disconnect_ready=False)
+assert not bad_cod.ready
+assert "cancel_on_disconnect_ready" in bad_cod.failures()
 
 bad=good_gate(withdraw_permission=True)
 assert not bad.ready
