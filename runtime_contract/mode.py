@@ -42,6 +42,8 @@ class LiveGate:
     exposure_cap_configured: bool
     order_cap_configured: bool
     kill_switch_tested: bool
+    resting_orders_possible: bool
+    cancel_on_disconnect_ready: bool
 
     def failures(self) -> list[str]:
         checks={
@@ -61,6 +63,9 @@ class LiveGate:
             "exposure_cap_configured":self.exposure_cap_configured,
             "order_cap_configured":self.order_cap_configured,
             "kill_switch_tested":self.kill_switch_tested,
+            "cancel_on_disconnect_ready":(
+                self.cancel_on_disconnect_ready if self.resting_orders_possible else True
+            ),
         }
         return [k for k,v in checks.items() if not v]
 
