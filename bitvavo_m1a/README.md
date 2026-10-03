@@ -69,8 +69,8 @@ and requires:
 `/homeassistant/bitvavo_research/m1a/M1A_FREEZE_001/execution_provenance.json`
 
 The runner hard-stops unless:
-- `M1A_EXECUTION_COMMIT_SHA` is explicitly set to the pinned 40-character execution SHA;
-- that SHA equals `execution_commit_sha` in the provenance record;
+- the mandatory Home Assistant app option `execution_commit_sha` is set to the pinned 40-character execution SHA;
+- that configured SHA equals `execution_commit_sha` in the provenance record;
 - protocol = `M1A-PREREG-v1.3`;
 - executor version = `1.2.0`;
 - freeze id = `M1A_FREEZE_001`;
@@ -81,7 +81,7 @@ The runner hard-stops unless:
 - research cutoff and first/last event UTC match the frozen manifest;
 - the results directory is still empty.
 
-This commit-SHA check is intentionally external provenance: the app must be built/deployed from the pinned commit and started with that same SHA in `M1A_EXECUTION_COMMIT_SHA`.
+The app configuration schema validates `execution_commit_sha` as exactly 40 lowercase hexadecimal characters. The app must be built/deployed from that pinned commit; the pre-run gate then requires the configured SHA and provenance record to agree.
 
 No M1A result may be inspected before this gate is complete.
 
