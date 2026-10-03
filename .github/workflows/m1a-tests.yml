@@ -13,9 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m py_compile bitvavo_m1a/freeze.py bitvavo_m1a/pre_run_gate.py bitvavo_m1a/analyze.py bitvavo_event_m0/collect_event_m0.py
+      - run: python -m py_compile bitvavo_m1a/freeze.py bitvavo_m1a/prepare_provenance.py bitvavo_m1a/pre_run_gate.py bitvavo_m1a/analyze.py bitvavo_event_m0/collect_event_m0.py
       - run: python bitvavo_m1a/test_prereg_v13.py
       - run: python bitvavo_m1a/test_freeze.py
+      - run: python bitvavo_m1a/test_prepare_provenance.py
       - run: python bitvavo_m1a/test_pre_run_gate.py
       - run: python bitvavo_m1a/test_regressions.py
       - run: python bitvavo_m1a/test_m1a.py
