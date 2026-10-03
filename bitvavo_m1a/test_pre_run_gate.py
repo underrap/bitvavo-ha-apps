@@ -23,8 +23,9 @@ with tempfile.TemporaryDirectory() as d:
   p=freeze/name;p.write_text("".join(json.dumps(x)+"\n" for x in rows))
   ts=[x.get("recv_utc_ns",x.get("utc_ns")) for x in rows]
   meta[name]={"records":len(rows),"sha256":sha(p),"first_utc_ns":min(ts),"last_utc_ns":max(ts)}
- mf={"schema":"m1a-freeze-v1","research_cutoff_utc":"2026-10-03T00:00:00.000000000Z",
-     "m0_version":"1.0.5","files":meta}
+ mf={"schema":"m1a-freeze-v1","freeze_id":"M1A_FREEZE_001","research_cutoff_utc":"2026-10-03T00:00:00.000000000Z",
+     "m0_version":"1.0.5","m0_capability":"persisted_reconstructed_book_checkpoints_v1",
+     "checkpoint_capability_verified":True,"files":meta}
  (freeze/"freeze_manifest.json").write_text(json.dumps(mf,sort_keys=True))
  commit="1"*40
  prov={
