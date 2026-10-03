@@ -256,6 +256,9 @@ def build_grid(root: Path, market: str):
             book = {"bids":dict(cp["bids"]), "asks":dict(cp["asks"]), "nonce":int(cp["nonce"])}
             valid = True
             segment += 1
+            # Hard segment boundary: TFI may use only trades received after this checkpoint.
+            trades.clear()
+            audit["tradeflow_segment_resets"] += 1
             next_cp_t = int(checkpoints[cp_i+1]["mono_ns"]) if cp_i+1 < len(checkpoints) else None
             continue
 
@@ -293,12 +296,18 @@ def row_target(rows, i, h_ns):
     j = i + step
     if j >= len(rows):
         return None
-    a,b = rows[i], rows[j]
-    if not a["valid"] or not b["valid"] or a["segment"] != b["segment"]:
+    window = rows[i:j+1]
+    if len(window) != step + 1:
         return None
-    if b["t"] - a["t"] != h_ns:
+    segment = window[0]["segment"]
+    for k, row in enumerate(window):
+        if not row["valid"] or row["segment"] != segment:
+            return None
+        if k and row["t"] - window[k-1]["t"] != GRID_NS:
+            return None
+    if window[-1]["t"] - window[0]["t"] != h_ns:
         return None
-    return 1e4 * ((b["mid"] - a["mid"]) / a["mid"])
+    return 1e4 * ((window[-1]["mid"] - window[0]["mid"]) / window[0]["mid"])
 
 def primary_eligible(rows):
     out=[]
