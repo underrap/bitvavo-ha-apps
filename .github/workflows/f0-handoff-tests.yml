@@ -1,0 +1,18 @@
+name: F0 handoff packager tests
+on:
+  push:
+    paths:
+      - 'bitvavo_microstructure/prepare_f0_handoff.py'
+      - 'bitvavo_microstructure/test_prepare_f0_handoff.py'
+      - '.github/workflows/f0-handoff-tests.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m py_compile bitvavo_microstructure/prepare_f0_handoff.py
+      - run: python bitvavo_microstructure/test_prepare_f0_handoff.py
