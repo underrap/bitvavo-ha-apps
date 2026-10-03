@@ -44,6 +44,8 @@ class LiveGate:
     kill_switch_tested: bool
     resting_orders_possible: bool
     cancel_on_disconnect_ready: bool
+    private_order_stream_ready: bool
+    continuous_reconciliation_ready: bool
 
     def failures(self) -> list[str]:
         checks={
@@ -63,6 +65,8 @@ class LiveGate:
             "exposure_cap_configured":self.exposure_cap_configured,
             "order_cap_configured":self.order_cap_configured,
             "kill_switch_tested":self.kill_switch_tested,
+            "private_order_stream_ready":self.private_order_stream_ready,
+            "continuous_reconciliation_ready":self.continuous_reconciliation_ready,
             "cancel_on_disconnect_ready":(
                 self.cancel_on_disconnect_ready if self.resting_orders_possible else True
             ),

@@ -25,6 +25,8 @@ Before LIVE writes are allowed, all of these must be true:
 - explicit max order notional is configured;
 - explicit total exposure cap is configured;
 - kill-switch behavior has passed its deterministic test;
+- authenticated order/fill stream tracking is operational;
+- periodic/continuous reconciliation of live order/balance state is operational as a fallback to the stream;
 - if the strategy can leave limit/trigger orders resting on Bitvavo, Cancel on disconnect is configured and its heartbeat path is tested.
 
 Unknown/missing state means **fail closed**.
@@ -41,6 +43,24 @@ does not replace restart reconciliation. A production strategy that never leaves
 may mark this gate not-applicable rather than pretending COD protects market orders.
 
 Source: https://docs.bitvavo.com/docs/cancel-on-disconnect/
+
+### Continuous reconciliation
+
+A healthy private WebSocket stream is necessary but not sufficient. Mature public trading engines
+also periodically reconcile in-flight/open orders and account/position state against the venue.
+This catches missed events and stale local state even when the process itself did not restart.
+
+The production bot should therefore use:
+- Bitvavo authenticated order/fill tracking as the fast path;
+- periodic authoritative order/balance reconciliation as the safety path;
+- placement blocking when either path reports an unresolved discrepancy.
+
+Public framework benchmark:
+- NautilusTrader startup + continuous reconciliation;
+- Hummingbot ClientOrderTracker/UserStreamTracker plus recovery QA;
+- Freqtrade persistent trade/order state with recurring exchange order updates.
+
+See `PUBLIC_FRAMEWORK_BENCHMARK.md`.
 
 ## Pause semantics
 
