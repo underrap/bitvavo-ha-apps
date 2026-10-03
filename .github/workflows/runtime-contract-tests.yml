@@ -1,0 +1,17 @@
+name: Runtime LIVE-safety contract
+on:
+  push:
+    paths:
+      - 'runtime_contract/**'
+      - '.github/workflows/runtime-contract-tests.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m py_compile runtime_contract/mode.py runtime_contract/test_mode.py
+      - run: python runtime_contract/test_mode.py

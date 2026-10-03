@@ -1,0 +1,90 @@
+# Runtime mode, migration and LIVE-safety acceptance contract
+
+Status: **reference/test contract — no runtime dependency**
+
+This is the remaining strategy-independent safety boundary for the local production bot.
+It complements `execution_contract/` and `accounting_contract/`.
+
+## Startup contract
+
+The production process may be configured as PAPER or LIVE, but a LIVE process starts in
+**RECOVERING**, not by immediately resuming placement.
+
+Before LIVE writes are allowed, all of these must be true:
+
+- database schema/migrations are current;
+- persisted local state has been loaded;
+- balances are reconciled with exchange `available + inOrder`;
+- open/local orders are reconciled against Bitvavo authoritative state;
+- there are no unknown exchange orders owned by this bot;
+- no fill with economically relevant missing settlement/fee data remains unresolved;
+- current market metadata is loaded;
+- current authenticated fee schedule is loaded;
+- market status is `trading`;
+- API key has read + trade and no withdrawal permission;
+- explicit max order notional is configured;
+- explicit total exposure cap is configured;
+- kill-switch behavior has passed its deterministic test.
+
+Unknown/missing state means **fail closed**.
+
+## Pause semantics
+
+`PAUSED` means **no new exposure**.
+
+It does not mean “stop looking after everything already open.” While paused the runtime may:
+
+- cancel pending entry orders;
+- maintain/cancel exit orders;
+- perform an explicitly risk-reducing exit.
+
+It may not place a new entry or otherwise increase exposure.
+
+This prevents the common failure mode where a “pause” button leaves existing risk unmanaged.
+
+## Safe-halt / kill-switch semantics
+
+`SAFE_HALT`:
+
+- blocks all new/increased exposure immediately;
+- permits cancellation of bot-owned open orders;
+- permits an explicitly risk-reducing exit;
+- does **not** silently market-sell the whole position.
+
+Automatic emergency liquidation would itself be an execution strategy and can create slippage.
+It therefore requires a separate explicit design decision rather than being hidden inside a kill switch.
+
+## Database migration acceptance criteria
+
+The exact current SQLite schema lives in the local bot and is not present in this repository,
+so this contract does not invent DDL. A production migration is acceptable only if it proves:
+
+- migration version is persisted and rerunning the migration is idempotent;
+- existing historical trades/lots/accounting rows are preserved;
+- `clientOrderId`, market-scoped `orderId`, order status, fill IDs, fill amounts, actual fee,
+  fee currency and settlement state can be persisted without lossy conversion;
+- the logical uniqueness rules required by execution recovery are enforced;
+- no schema change silently changes old P/L;
+- migration failure prevents LIVE startup;
+- backup/rollback procedure is tested before applying a destructive migration;
+- restart after migration can reconcile local state to Bitvavo without placing an order first.
+
+## PAPER/LIVE isolation
+
+PAPER and LIVE may share pure strategy/decision code, but must not share write paths:
+
+- PAPER cannot call authenticated create/update/cancel order endpoints;
+- LIVE order placement requires the LIVE gate;
+- a mode switch cannot retroactively reinterpret paper fills as exchange fills;
+- database rows must carry enough provenance to distinguish PAPER, LIVE and replay/backtest events.
+
+## Integration target
+
+When the local bot source is available, the first production hardening pass should target:
+
+- `execution.py`: intent IDs, order/fill lifecycle, retry policy, market/fee rules;
+- `bot.py`: startup recovery, mode gate, key permission check, pause/kill-switch enforcement;
+- SQLite migrations: durable intent/order/fill/accounting fields and mode provenance;
+- dashboard: surface blocked/recovering/paused state without mixing it with strategy signals.
+
+No Smart strategy should gain LIVE permission merely because this contract exists.
