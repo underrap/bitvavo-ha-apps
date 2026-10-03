@@ -24,9 +24,23 @@ Before LIVE writes are allowed, all of these must be true:
 - API key has read + trade and no withdrawal permission;
 - explicit max order notional is configured;
 - explicit total exposure cap is configured;
-- kill-switch behavior has passed its deterministic test.
+- kill-switch behavior has passed its deterministic test;
+- if the strategy can leave limit/trigger orders resting on Bitvavo, Cancel on disconnect is configured and its heartbeat path is tested.
 
 Unknown/missing state means **fail closed**.
+
+### Cancel on disconnect
+
+Bitvavo supports `cancelOrdersAfter` / `codGroupId` for resting orders. The exchange
+cancels the grouped open orders when the bot stops refreshing the countdown. The documented
+minimum expiry is 10 seconds; Bitvavo's example recommends refreshing a 30-second timer about
+every 15 seconds.
+
+This is a valuable network-failure safety layer, but it does **not** apply to market orders and
+does not replace restart reconciliation. A production strategy that never leaves resting orders
+may mark this gate not-applicable rather than pretending COD protects market orders.
+
+Source: https://docs.bitvavo.com/docs/cancel-on-disconnect/
 
 ## Pause semantics
 
