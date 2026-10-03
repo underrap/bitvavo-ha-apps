@@ -13,6 +13,7 @@ def good_gate(**overrides):
         withdraw_permission=False,exposure_cap_configured=True,
         order_cap_configured=True,kill_switch_tested=True,
         resting_orders_possible=True,cancel_on_disconnect_ready=True,
+        private_order_stream_ready=True,continuous_reconciliation_ready=True,
     )
     d.update(overrides)
     return LiveGate(**d)
@@ -28,6 +29,7 @@ for field in (
     "no_unknown_orders","no_unsettled_fills","market_rules_loaded","fees_loaded",
     "market_trading","read_permission","trade_permission","exposure_cap_configured",
     "order_cap_configured","kill_switch_tested","cancel_on_disconnect_ready",
+    "private_order_stream_ready","continuous_reconciliation_ready",
 ):
     bad=good_gate(**{field:False})
     assert not bad.ready,(field,bad.failures())
