@@ -18,8 +18,12 @@ BOOTSTRAPS=10000
 BOOT_SEED=20261003
 # Public tier-0 schedule verified 2026-10-03. Keep explicit in output.
 TAKER_EUR=0.0025
+MAKER_EUR=0.0015
 TAKER_USDC=0.0005
+MAKER_USDC=0.0005
 USDC_EUR_CONVERSION_FEE=0.0010
+FEE_SOURCE_URL="https://bitvavo.com/nl/fees"
+FEE_VERIFIED_DATE="2026-10-03"
 
 def sha256_file(p):
     h=hashlib.sha256()
@@ -128,7 +132,8 @@ def analyze_pair(rec):
                 "buy_slippage_bps":one_way_slippage_bps(eb["vwap"],eur["mid"],"buy"),
                 "sell_slippage_bps":one_way_slippage_bps(es["vwap"],eur["mid"],"sell"),
                 "prefee_roundtrip_cost_bps":bps(1-es["vwap"]/eb["vwap"]),
-                "taker_taker_cost_bps":roundtrip_cost_bps(eb["vwap"],es["vwap"],TAKER_EUR)
+                "taker_taker_cost_bps":roundtrip_cost_bps(eb["vwap"],es["vwap"],TAKER_EUR),
+                "maker_maker_fee_sensitivity_bps":roundtrip_cost_bps(eb["vwap"],es["vwap"],MAKER_EUR)
             }
         else: row["EUR"]={"insufficient_depth":True}
         if ub and us:
@@ -138,7 +143,8 @@ def analyze_pair(rec):
                 "buy_slippage_bps":one_way_slippage_bps(ub["vwap"],usdc["mid"],"buy"),
                 "sell_slippage_bps":one_way_slippage_bps(us["vwap"],usdc["mid"],"sell"),
                 "prefee_roundtrip_cost_bps":bps(1-us["vwap"]/ub["vwap"]),
-                "taker_taker_cost_bps":roundtrip_cost_bps(ub["vwap"],us["vwap"],TAKER_USDC)
+                "taker_taker_cost_bps":roundtrip_cost_bps(ub["vwap"],us["vwap"],TAKER_USDC),
+                "maker_maker_fee_sensitivity_bps":roundtrip_cost_bps(ub["vwap"],us["vwap"],MAKER_USDC)
             }
             # Fee-only per-cycle funding stress: two USDC/EUR conversions; excludes conversion spread/slippage.
             retained=(1-base["taker_taker_cost_bps"]/10000.0)*(1-USDC_EUR_CONVERSION_FEE)/(1+USDC_EUR_CONVERSION_FEE)
@@ -178,10 +184,17 @@ def summarize(rows):
         "minimum_required_pairs":MIN_USABLE_PAIRS,
         "minimum_gate_pass":len(rows)>=MIN_USABLE_PAIRS,
         "fees":{
+            "source":FEE_SOURCE_URL,
+            "verified_date":FEE_VERIFIED_DATE,
             "BTC-EUR_taker":TAKER_EUR,
+            "BTC-EUR_maker":MAKER_EUR,
             "BTC-USDC_taker":TAKER_USDC,
+            "BTC-USDC_maker":MAKER_USDC,
             "USDC-EUR_conversion_fee":USDC_EUR_CONVERSION_FEE,
-            "conversion_note":"fee-only stress; USDC/EUR spread/slippage/basis not measured by this collector"
+            "one_time_usdc_funding_fee_bps":USDC_EUR_CONVERSION_FEE*10000.0,
+            "one_time_funding_note":"A single one-way USDC funding conversion fee is reported separately; amortized cost per cycle = one_time_usdc_funding_fee_bps / number_of_cycles.",
+            "maker_note":"maker/maker values are fee sensitivity only; snapshot data cannot establish passive fill probability or adverse selection.",
+            "conversion_note":"per-cycle funding stress includes conversion fees only; USDC/EUR spread/slippage/basis not measured by this collector"
         },
         "pairing":{
             "local_midpoint_skew_ms":stats([r["local_pair_midpoint_skew_ms"] for r in rows if r["local_pair_midpoint_skew_ms"] is not None]),
@@ -207,6 +220,7 @@ def summarize(rows):
                 "insufficient_depth_n":sum(1 for x in eur if x.get("insufficient_depth")),
                 "prefee_roundtrip_cost_bps":stats([x.get("prefee_roundtrip_cost_bps") for x in eur]),
                 "taker_taker_cost_bps":stats([x.get("taker_taker_cost_bps") for x in eur]),
+                "maker_maker_fee_sensitivity_bps":stats([x.get("maker_maker_fee_sensitivity_bps") for x in eur]),
                 "buy_slippage_bps":stats([x.get("buy_slippage_bps") for x in eur]),
                 "sell_slippage_bps":stats([x.get("sell_slippage_bps") for x in eur]),
                 "buy_levels":stats([x.get("buy_levels") for x in eur]),
@@ -216,6 +230,7 @@ def summarize(rows):
                 "insufficient_depth_n":sum(1 for x in usd if x.get("insufficient_depth")),
                 "prefee_roundtrip_cost_bps":stats([x.get("prefee_roundtrip_cost_bps") for x in usd]),
                 "taker_taker_cost_bps":stats([x.get("taker_taker_cost_bps") for x in usd]),
+                "maker_maker_fee_sensitivity_bps":stats([x.get("maker_maker_fee_sensitivity_bps") for x in usd]),
                 "fee_only_per_cycle_funding_bps":stats([x.get("taker_taker_plus_conversion_fee_only_bps") for x in usd]),
                 "buy_slippage_bps":stats([x.get("buy_slippage_bps") for x in usd]),
                 "sell_slippage_bps":stats([x.get("sell_slippage_bps") for x in usd]),
@@ -282,7 +297,8 @@ def main():
         f"- Analyzer: {VERSION}",
         f"- Usable paired snapshots: {len(rows)} / {attempted}",
         f"- Pre-registered minimum >= {MIN_USABLE_PAIRS}: **{'PASS' if summary['minimum_gate_pass'] else 'FAIL'}**",
-        "- Primary economics: public tier-0 taker/taker fees; no maker-fill claim.",
+        f"- Fee schedule verified: {FEE_VERIFIED_DATE} — {FEE_SOURCE_URL}",
+        "- Primary economics: public tier-0 taker/taker fees; maker/maker is fee sensitivity only, not a fill claim.",
         "- USDC per-cycle funding stress includes conversion fees only; USDC/EUR conversion spread/slippage/basis remain unmeasured.","",
         "## Capacity / paired delta (USDC minus EUR, bp)"
     ]
