@@ -197,17 +197,9 @@ def build_grid(root: Path, market: str):
         ii = bisect.bisect_right(invalid_times, t) - 1
         return ii < 0 or invalid_times[ii] < checkpoint_time
 
+    # A persisted checkpoint opens a new causal segment. Trade-flow state starts empty:
+    # no TFI lookback is allowed to cross the segment boundary.
     trades = deque()
-    for r in load_jsonl(root/"raw_events.jsonl"):
-        t = int(r["recv_mono_ns"])
-        if t > cp_t:
-            break
-        msg = r.get("raw", {})
-        if msg.get("market")==market and msg.get("event")=="trade" and cp_t-LOOKBACK_NS < t <= cp_t:
-            try:
-                trades.append((t, msg["side"], float(msg["amount"])))
-            except Exception:
-                pass
 
     def market_events():
         for r in load_jsonl(root/"raw_events.jsonl"):
