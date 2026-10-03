@@ -22,6 +22,8 @@ Verified against Bitvavo API documentation on 2026-10-03:
 - Market metadata supplies current `tickSize`, decimal precision, min/max notional and max open orders; those must be validated at runtime.
 - Fees must come from the authenticated fee endpoint for the active market/quote rather than a hard-coded percentage.
 - API keys used by the bot must have read + trade permissions and **no withdrawal permission**.
+- Bitvavo's Cancel on disconnect can group resting orders under a `codGroupId` and cancel them
+  if the bot stops refreshing the countdown; canceled orders report `cancelOnDisconnect`.
 
 Sources:
 - https://docs.bitvavo.com/docs/order-lifecycle/
@@ -32,6 +34,7 @@ Sources:
 - https://docs.bitvavo.com/docs/rest-api/get-markets/
 - https://docs.bitvavo.com/docs/rest-api/get-account-fees/
 - https://docs.bitvavo.com/docs/get-started/
+- https://docs.bitvavo.com/docs/cancel-on-disconnect/
 
 ## Required production behavior
 
@@ -48,7 +51,8 @@ Before LIVE can be considered, the runtime must demonstrate all of the following
 9. **Post-only semantics** — `cancelPostOnly`/protection cancellation is an expected terminal outcome, not proof that placement never happened.
 10. **Permission safety** — LIVE startup refuses keys with withdrawal permission and refuses missing read/trade permissions.
 11. **Self-trade protection** — do not assume simultaneous opposing bot orders can match; persist/handle the selected Bitvavo self-trade-prevention behavior.
-12. **Fail closed** — unknown order status, regressing fill totals, conflicting IDs or unreconciled startup state block further placements.
+12. **Disconnect safety** — if LIVE can leave resting orders, use/test `codGroupId` + Cancel on disconnect or explicitly document why it is not applicable. It supplements, not replaces, restart reconciliation.
+13. **Fail closed** — unknown order status, regressing fill totals, conflicting IDs or unreconciled startup state block further placements.
 
 ## Integration boundary
 
