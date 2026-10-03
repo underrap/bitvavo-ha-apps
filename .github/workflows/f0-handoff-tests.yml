@@ -5,6 +5,7 @@ on:
       - 'bitvavo_microstructure/prepare_f0_handoff.py'
       - 'bitvavo_microstructure/test_prepare_f0_handoff.py'
       - '.github/workflows/f0-handoff-tests.yml'
+      - 'bitvavo_microstructure/EXECUTION_LOCK_WEEK1.md'
   workflow_dispatch:
 jobs:
   test:
