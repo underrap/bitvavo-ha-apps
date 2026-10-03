@@ -10,3 +10,7 @@ init: false
 map:
   - type: homeassistant_config
     read_only: false
+options:
+  execution_commit_sha: null
+schema:
+  execution_commit_sha: "match(^[0-9a-f]{40}$)"
