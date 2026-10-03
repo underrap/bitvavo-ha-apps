@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory() as d:
    "asks":[["101","1"],["102","1"],["103","1"],["104","1"],["105","1"]]}
  ]
  raw=[
+  {"recv_mono_ns":t0-400_000_000,"recv_utc_ns":600_000_000,"raw":{"market":"BTC-EUR","event":"trade","side":"buy","amount":"1"}},
   {"recv_mono_ns":t0+400_000_000,"recv_utc_ns":1_400_000_000,"raw":{"market":"BTC-EUR","event":"trade","side":"buy","amount":"1"}},
   {"recv_mono_ns":t0+1_250_000_000,"recv_utc_ns":2_250_000_000,"raw":{"market":"BTC-EUR","event":"book","nonce":21,"bids":[["99","1"]],"asks":[]}},
   {"recv_mono_ns":t0+1_750_000_000,"recv_utc_ns":2_750_000_000,"raw":{"market":"BTC-EUR","event":"book","nonce":22,"bids":[["99","1"]],"asks":[]}},
@@ -36,6 +37,9 @@ with tempfile.TemporaryDirectory() as d:
  (root/"raw_events.jsonl").write_text("".join(json.dumps(x)+"\n" for x in raw))
  (root/"sessions.jsonl").write_text("")
  grid,audit=m.build_grid(root,"BTC-EUR")
+ first=[r for r in grid if r["segment"]==0 and r["valid"]]
+ assert first,grid
+ assert first[0]["f3"]==0.0,first[0]  # pre-checkpoint trade must not seed TFI
  post=[r for r in grid if r["segment"]==1 and r["valid"]]
  assert post,grid
  assert post[0]["f3"]==0.0,post[0]
