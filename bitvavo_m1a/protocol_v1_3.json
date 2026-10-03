@@ -1,0 +1,64 @@
+{
+  "protocol": "M1A-PREREG-v1.3",
+  "content_protocol": "M1A-PREREG-v1.2",
+  "status": "FROZEN-SPEC / EXECUTION BLOCKED",
+  "repository": "underrap/bitvavo-ha-apps",
+  "baseline_commit_sha": "9780a18d74444c1b592b163fc1cb679da4a3dd67",
+  "required_executor_version": "1.2.0",
+  "m0": {
+    "minimum_capability_version": "1.0.5",
+    "freeze_id": "M1A_FREEZE_001",
+    "required_files": ["raw_events.jsonl", "sessions.jsonl", "book_checkpoints.jsonl"]
+  },
+  "design": {
+    "primary_market": "BTC-EUR",
+    "exploratory_market": "BTC-USDC",
+    "grid_ms": 500,
+    "primary_feature": "L1_imbalance",
+    "secondary_features": ["D5_imbalance", "TFI_1s"],
+    "primary_horizon_ms": 1000,
+    "secondary_horizons_ms": [500, 2000, 5000],
+    "trade_flow_lookback_ms": 1000,
+    "discovery_fraction": 0.60,
+    "quantiles": [0.20, 0.80],
+    "confirmatory_test": "Spearman rho: L1 imbalance vs 1s mid-price markout on untouched HOLDOUT"
+  },
+  "bootstrap": {
+    "method": "moving-block",
+    "block_seconds": 60,
+    "replicates": 10000,
+    "seed": 20261002,
+    "ci": "percentile",
+    "ci_quantiles": [0.025, 0.975],
+    "one_sided_p": "(1 + count(rho_star <= 0)) / 10001"
+  },
+  "minimum_data": {
+    "primary_eligible_total": 3600,
+    "holdout_primary_eligible": 1440,
+    "holdout_valid_seconds": 1800,
+    "valid_60s_blocks": 10,
+    "q20_group_holdout": 30,
+    "q80_group_holdout": 30,
+    "trimmed_holdout": 1000
+  },
+  "pass_requires_all": [
+    "holdout_rho > 0",
+    "p_boot < 0.05",
+    "percentile_ci95_lower > 0",
+    "q80_minus_q20_contrast > 0",
+    "at_least_3_of_4_holdout_quarter_rhos > 0",
+    "signed_1pct_trim_rho > 0"
+  ],
+  "provenance_required_before_run": [
+    "execution_commit_sha",
+    "executor_version",
+    "research_cutoff_utc",
+    "manifest_path",
+    "manifest_sha256",
+    "raw_source_paths",
+    "raw_source_sha256",
+    "first_event_utc",
+    "last_event_utc",
+    "m0_provenance"
+  ]
+}

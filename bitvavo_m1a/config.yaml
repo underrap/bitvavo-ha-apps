@@ -1,7 +1,7 @@
 name: "Bitvavo M1A Microstructure Test"
-version: "1.0.0"
+version: "1.2.0"
 slug: "bitvavo_m1a"
-description: "Frozen causal same-venue microstructure information test; research only"
+description: "M1A-PREREG-v1.3 frozen same-venue microstructure executor; research only"
 arch:
   - aarch64
 startup: once
@@ -10,3 +10,7 @@ init: false
 map:
   - type: homeassistant_config
     read_only: false
+options:
+  execution_commit_sha: null
+schema:
+  execution_commit_sha: "match(^[0-9a-f]{40}$)"

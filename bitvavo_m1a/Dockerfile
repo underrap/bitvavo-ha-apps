@@ -6,6 +6,7 @@ LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUIL
 
 RUN apk add --no-cache python3
 COPY freeze.py /freeze.py
+COPY pre_run_gate.py /pre_run_gate.py
 COPY analyze.py /analyze.py
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
