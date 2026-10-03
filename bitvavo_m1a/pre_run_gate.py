@@ -70,8 +70,12 @@ def main():
         fail("manifest SHA-256 mismatch")
 
     mf=json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mf.get("freeze_id")!=FREEZE_ID:
+        fail(f"freeze manifest freeze_id={mf.get('freeze_id')!r}; expected {FREEZE_ID!r}")
     if mf.get("m0_version")!=M0_VERSION:
         fail(f"freeze manifest m0_version={mf.get('m0_version')!r}; expected {M0_VERSION!r}")
+    if mf.get("m0_capability")!="persisted_reconstructed_book_checkpoints_v1" or mf.get("checkpoint_capability_verified") is not True:
+        fail("freeze manifest does not prove required persisted reconstructed-book checkpoint capability")
     if mf.get("research_cutoff_utc")!=prov.get("research_cutoff_utc"):
         fail("research_cutoff_utc mismatch between provenance and freeze manifest")
 
