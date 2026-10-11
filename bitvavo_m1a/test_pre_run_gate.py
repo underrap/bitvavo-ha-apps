@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as d:
  (freeze/"freeze_manifest.json").write_text(json.dumps(mf,sort_keys=True))
  commit="1"*40
  prov={
-  "protocol":"M1A-PREREG-v1.3","content_protocol":"M1A-PREREG-v1.2","executor_version":"1.2.0",
+  "protocol":"M1A-PREREG-v1.3","content_protocol":"M1A-PREREG-v1.2","executor_version":"1.2.1",
   "freeze_id":"M1A_FREEZE_001","m0_version":"1.0.5","protocol_conformance_tests":"PASS",
   "execution_commit_sha":commit,"research_cutoff_utc":mf["research_cutoff_utc"],
   "manifest_sha256":sha(freeze/"freeze_manifest.json"),
