@@ -64,7 +64,7 @@ def main():
     prov={
         "protocol":"M1A-PREREG-v1.3",
         "content_protocol":"M1A-PREREG-v1.2",
-        "executor_version":"1.2.0",
+        "executor_version":"1.2.1",
         "execution_commit_sha":commit,
         "protocol_conformance_tests":"PASS",
         "ci_run_id":str(a.ci_run_id),
