@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROTOCOL="M1A-PREREG-v1.3"
 CONTENT_PROTOCOL="M1A-PREREG-v1.2"
-EXECUTOR_VERSION="1.2.0"
+EXECUTOR_VERSION="1.2.1"
 FREEZE_ID="M1A_FREEZE_001"
 M0_VERSION="1.0.5"
 REQUIRED=("raw_events.jsonl","sessions.jsonl","book_checkpoints.jsonl")
