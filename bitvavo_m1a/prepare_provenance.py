@@ -37,11 +37,11 @@ def main():
 
     mp=freeze/"freeze_manifest.json"
     mf=json.loads(mp.read_text(encoding="utf-8"))
-    if mf.get("freeze_id")!="M1A_FREEZE_001":
+    if mf.get("freeze_id")!="M1A_FREEZE_002":
         raise SystemExit("freeze_id mismatch")
-    if mf.get("m0_version")!="1.0.5":
+    if mf.get("m0_version")!="1.0.6":
         raise SystemExit("M0 version mismatch")
-    if mf.get("m0_capability")!="persisted_reconstructed_book_checkpoints_v1" or mf.get("checkpoint_capability_verified") is not True:
+    if mf.get("m0_capability")!="persisted_reconstructed_book_checkpoints_v2" or mf.get("checkpoint_capability_verified") is not True:
         raise SystemExit("required M0 checkpoint capability not verified")
 
     first=[];last=[];paths={};hashes={}
@@ -64,13 +64,13 @@ def main():
     prov={
         "protocol":"M1A-PREREG-v1.3",
         "content_protocol":"M1A-PREREG-v1.2",
-        "executor_version":"1.2.1",
+        "executor_version":"1.2.2",
         "execution_commit_sha":commit,
         "protocol_conformance_tests":"PASS",
         "ci_run_id":str(a.ci_run_id),
-        "freeze_id":"M1A_FREEZE_001",
-        "m0_version":"1.0.5",
-        "m0_capability":"persisted_reconstructed_book_checkpoints_v1",
+        "freeze_id":"M1A_FREEZE_002",
+        "m0_version":"1.0.6",
+        "m0_capability":"persisted_reconstructed_book_checkpoints_v2",
         "research_cutoff_utc":mf["research_cutoff_utc"],
         "manifest_path":str(mp),
         "manifest_sha256":sha256(mp),

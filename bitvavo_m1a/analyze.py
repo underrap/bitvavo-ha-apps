@@ -5,7 +5,7 @@ import argparse, bisect, hashlib, json, math, random, statistics
 from collections import Counter, deque
 from pathlib import Path
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 PROTOCOL = "M1A-PREREG-v1.3"
 CONTENT_PROTOCOL = "M1A-PREREG-v1.2"
 PRIMARY = "BTC-EUR"
@@ -149,8 +149,10 @@ def apply_book(book, msg):
 def audit_manifest(root: Path):
     mf = json.loads((root/"freeze_manifest.json").read_text(encoding="utf-8"))
     errors = []
-    if mf.get("m0_version") != "1.0.5":
-        errors.append(f'm0_version must equal 1.0.5, got {mf.get("m0_version")!r}')
+    if mf.get("m0_version") != "1.0.6":
+        errors.append(f'm0_version must equal 1.0.6, got {mf.get("m0_version")!r}')
+    if mf.get("m0_capability") != "persisted_reconstructed_book_checkpoints_v2":
+        errors.append("M0 capability must be persisted_reconstructed_book_checkpoints_v2")
     for name in ("raw_events.jsonl", "sessions.jsonl", "book_checkpoints.jsonl"):
         meta = mf.get("files", {}).get(name)
         p = root/name
@@ -162,75 +164,66 @@ def audit_manifest(root: Path):
             errors.append(f"hash mismatch: {name}")
     return mf, errors
 
-def monotonic_epoch_boundaries(root: Path):
-    """Return UTC boundaries where the host monotonic clock reset.
-
-    M0 persists a process-local monotonic receive clock. A Raspberry Pi reboot
-    legitimately resets that clock. sessions.jsonl is append-only and records
-    both utc_ns and mono_ns, so a mono regression with forward UTC establishes
-    a new hard causal epoch without using market outcomes.
-    """
-    boundaries=[]
-    last_mono=None
-    last_utc=None
+def boot_epoch_map(root: Path):
+    """Build a chronological hard-causal epoch map from explicit M0 v1.0.6 boot IDs."""
+    first_utc={}
     for x in load_jsonl(root/"sessions.jsonl"):
-        if x.get("mono_ns") is None or x.get("utc_ns") is None:
-            continue
-        mono=int(x["mono_ns"]); utc=int(x["utc_ns"])
-        if last_mono is not None and mono < last_mono:
-            if last_utc is not None and utc <= last_utc:
-                raise RuntimeError("cannot establish monotonic restart epoch: UTC did not advance")
-            if boundaries and utc <= boundaries[-1]:
-                raise RuntimeError("non-increasing monotonic restart epoch boundary")
-            boundaries.append(utc)
-        last_mono=mono; last_utc=utc
-    return boundaries
-
-def epoch_for_utc(utc_ns, boundaries):
-    return bisect.bisect_right(boundaries, int(utc_ns))
+        boot=x.get("boot_id")
+        if not boot or x.get("utc_ns") is None:
+            raise RuntimeError("M0 v1.0.6 session record missing boot_id/utc_ns")
+        utc=int(x["utc_ns"])
+        first_utc[boot]=utc if boot not in first_utc else min(first_utc[boot],utc)
+    if not first_utc:
+        raise RuntimeError("no M0 boot epochs found")
+    ordered=sorted(first_utc,key=lambda b:first_utc[b])
+    return {b:i for i,b in enumerate(ordered)}
 
 def build_grid(root: Path, market: str):
-    epoch_boundaries=monotonic_epoch_boundaries(root)
+    epochs=boot_epoch_map(root)
 
     checkpoints=[]
     for x in load_jsonl(root/"book_checkpoints.jsonl"):
         if x.get("market")!=market:
             continue
+        required=("boot_id","mono_ns","covered_through_recv_mono_ns","nonce","bids","asks")
+        if not all(k in x for k in required):
+            raise RuntimeError(f"{market}: v1.0.6 checkpoint missing causal coverage fields")
+        if x["boot_id"] not in epochs:
+            raise RuntimeError(f"{market}: checkpoint references unknown boot_id")
         cp=dict(x)
-        cp["_epoch"]=epoch_for_utc(cp["utc_ns"],epoch_boundaries)
+        cp["_epoch"]=epochs[cp["boot_id"]]
+        cp["_covered"]=int(cp["covered_through_recv_mono_ns"])
+        if int(cp["mono_ns"]) != cp["_covered"]:
+            raise RuntimeError(f"{market}: checkpoint mono_ns != causal coverage watermark")
         checkpoints.append(cp)
-    checkpoints.sort(key=lambda x:(int(x["_epoch"]),int(x["mono_ns"])))
+    checkpoints.sort(key=lambda x:(int(x["_epoch"]),int(x["_covered"])))
     if not checkpoints:
         raise RuntimeError(f"{market}: no persisted book checkpoint")
 
-    # A regression *within* an inferred boot epoch is a true integrity failure.
-    # A regression at a documented restart boundary is expected and becomes a
-    # hard causal boundary; it must never be stitched into the old clock.
     last_by_epoch={}
-    last_global=None
-    global_regressions=0
     within_epoch_regressions=0
     for r in load_jsonl(root/"raw_events.jsonl"):
+        boot=r.get("boot_id")
+        if boot not in epochs:
+            raise RuntimeError("raw event missing/unknown boot_id")
+        epoch=epochs[boot]
         t=int(r["recv_mono_ns"])
-        epoch=epoch_for_utc(r["recv_utc_ns"],epoch_boundaries)
-        if last_global is not None and t < last_global:
-            global_regressions += 1
         if epoch in last_by_epoch and t < last_by_epoch[epoch]:
             within_epoch_regressions += 1
         last_by_epoch[epoch]=t
-        last_global=t
     if within_epoch_regressions:
         raise RuntimeError(
-            f"monotonic receive clock regressed {within_epoch_regressions} times within inferred restart epoch"
+            f"monotonic receive clock regressed {within_epoch_regressions} times within explicit boot epoch"
         )
 
     invalid_times={}
     for x in load_jsonl(root/"sessions.jsonl"):
         if x.get("kind") not in INVALID_KINDS or x.get("market") not in (None,market):
             continue
-        if x.get("mono_ns") is None or x.get("utc_ns") is None:
-            continue
-        epoch=epoch_for_utc(x["utc_ns"],epoch_boundaries)
+        boot=x.get("boot_id")
+        if boot not in epochs or x.get("mono_ns") is None:
+            raise RuntimeError("invalid-session record missing explicit boot epoch")
+        epoch=epochs[boot]
         invalid_times.setdefault(epoch,[]).append(int(x["mono_ns"]))
     for vals in invalid_times.values():
         vals.sort()
@@ -238,7 +231,7 @@ def build_grid(root: Path, market: str):
     first_cp=checkpoints[0]
     cp_i=0
     cp_epoch=int(first_cp["_epoch"])
-    cp_t=int(first_cp["mono_ns"])
+    cp_t=int(first_cp["_covered"])
     book={"bids":dict(first_cp["bids"]),"asks":dict(first_cp["asks"]),"nonce":int(first_cp["nonce"])}
     valid=True
     segment=0
@@ -247,11 +240,11 @@ def build_grid(root: Path, market: str):
         return checkpoints[cp_i+1] if cp_i+1 < len(checkpoints) else None
 
     def cp_valid_at(epoch,t,checkpoint_epoch,checkpoint_time):
-        if epoch != checkpoint_epoch:
+        if epoch!=checkpoint_epoch:
             return False
         vals=invalid_times.get(epoch,[])
         ii=bisect.bisect_right(vals,t)-1
-        return ii < 0 or vals[ii] < checkpoint_time
+        return ii<0 or vals[ii] <= checkpoint_time
 
     trades=deque()
 
@@ -261,9 +254,13 @@ def build_grid(root: Path, market: str):
             msg=r.get("raw",{})
             if msg.get("market")!=market:
                 continue
-            epoch=epoch_for_utc(r["recv_utc_ns"],epoch_boundaries)
+            boot=r.get("boot_id")
+            if boot not in epochs:
+                raise RuntimeError("market event missing explicit boot epoch")
+            epoch=epochs[boot]
             coord=(epoch,int(r["recv_mono_ns"]))
-            if coord>=first_coord:
+            # Strictly greater: the checkpoint explicitly proves coverage through cp_t.
+            if coord>first_coord:
                 yield epoch,r
 
     events=market_events()
@@ -276,8 +273,7 @@ def build_grid(root: Path, market: str):
     rows=[]
     audit=Counter()
     audit["checkpoint_count"]=len(checkpoints)
-    audit["restart_epoch_boundaries"]=len(epoch_boundaries)
-    audit["monotonic_global_regressions"]=global_regressions
+    audit["explicit_boot_epochs"]=len(epochs)
     audit["monotonic_regressions"]=within_epoch_regressions
 
     def advance_checkpoint():
@@ -285,7 +281,7 @@ def build_grid(root: Path, market: str):
         cp_i+=1
         cp=checkpoints[cp_i]
         cp_epoch=int(cp["_epoch"])
-        cp_t=int(cp["mono_ns"])
+        cp_t=int(cp["_covered"])
         book={"bids":dict(cp["bids"]),"asks":dict(cp["asks"]),"nonce":int(cp["nonce"])}
         valid=True
         segment+=1
@@ -295,7 +291,6 @@ def build_grid(root: Path, market: str):
 
     while current is not None or next_cp() is not None:
         nc=next_cp()
-
         if current is not None:
             event_epoch=int(current[0])
             event_t=int(current[1]["recv_mono_ns"])
@@ -303,13 +298,10 @@ def build_grid(root: Path, market: str):
         else:
             event_epoch=None;event_t=None;event_coord=None
 
-        nc_coord=(int(nc["_epoch"]),int(nc["mono_ns"])) if nc is not None else None
+        nc_coord=(int(nc["_epoch"]),int(nc["_covered"])) if nc is not None else None
 
-        # If the event stream has crossed into a later boot epoch, never bridge
-        # the old monotonic clock. Skip pre-checkpoint events or advance to the
-        # first persisted checkpoint that is causally available.
-        if current is not None and event_epoch > cp_epoch:
-            if nc_coord is not None and nc_coord <= event_coord:
+        if current is not None and event_epoch>cp_epoch:
+            if nc_coord is not None and nc_coord<=event_coord:
                 advance_checkpoint()
                 continue
             try:
@@ -318,28 +310,26 @@ def build_grid(root: Path, market: str):
                 current=None
             continue
 
-        # If there are no more market events but a later persisted checkpoint
-        # exists, advance to it; no rows are fabricated beyond observed events.
         if current is None:
             if nc is not None:
                 advance_checkpoint()
                 continue
             break
 
-        # Same-epoch causal processing. A checkpoint is itself a hard boundary.
-        if event_epoch < cp_epoch or (event_epoch==cp_epoch and event_t < cp_t):
+        # Events at/before the checkpoint watermark are already incorporated.
+        if event_epoch<cp_epoch or (event_epoch==cp_epoch and event_t<=cp_t):
             try:
                 current=next(events)
             except StopIteration:
                 current=None
             continue
 
-        same_epoch_nc_t=(int(nc["mono_ns"]) if nc is not None and int(nc["_epoch"])==cp_epoch else None)
+        same_epoch_nc_t=(int(nc["_covered"]) if nc is not None and int(nc["_epoch"])==cp_epoch else None)
         boundary=event_t
         if same_epoch_nc_t is not None:
             boundary=min(boundary,same_epoch_nc_t)
 
-        while next_grid < boundary:
+        while next_grid<boundary:
             while trades and trades[0][0] <= next_grid-LOOKBACK_NS:
                 trades.popleft()
             buy=sum(v for t,side,v in trades if t<=next_grid and side=="buy")
@@ -347,7 +337,6 @@ def build_grid(root: Path, market: str):
             f3=imbalance(buy,sell) if buy+sell>0 else 0.0
             if buy+sell==0:
                 audit["zero_tradeflow_grids"]+=1
-
             met=book_metrics(book["bids"],book["asks"]) if valid and cp_valid_at(cp_epoch,next_grid,cp_epoch,cp_t) else None
             if met is None:
                 audit["invalid_grids"]+=1
@@ -358,7 +347,7 @@ def build_grid(root: Path, market: str):
                 audit["valid_grids"]+=1
             next_grid+=GRID_NS
 
-        if same_epoch_nc_t is not None and same_epoch_nc_t <= event_t:
+        if same_epoch_nc_t is not None and same_epoch_nc_t<=event_t:
             advance_checkpoint()
             continue
 

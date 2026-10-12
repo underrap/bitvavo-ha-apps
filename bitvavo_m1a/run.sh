@@ -1,7 +1,7 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
 
-ROOT="/homeassistant/bitvavo_research/m1a/M1A_FREEZE_001"
+ROOT="/homeassistant/bitvavo_research/m1a/M1A_FREEZE_002"
 FROZEN="${ROOT}/frozen"
 PROVENANCE="${ROOT}/execution_provenance.json"
 RESULTS="${ROOT}/results"

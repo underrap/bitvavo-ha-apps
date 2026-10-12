@@ -3,9 +3,9 @@ import argparse, hashlib, json, time
 from pathlib import Path
 
 FILES=("raw_events.jsonl","sessions.jsonl","book_checkpoints.jsonl")
-FREEZE_ID="M1A_FREEZE_001"
-M0_VERSION="1.0.5"
-CAPABILITY="persisted_reconstructed_book_checkpoints_v1"
+FREEZE_ID="M1A_FREEZE_002"
+M0_VERSION="1.0.6"
+CAPABILITY="persisted_reconstructed_book_checkpoints_v2"
 
 def canon(x): return json.dumps(x,sort_keys=True,separators=(",",":"),ensure_ascii=False)
 def sha256(p):
@@ -21,7 +21,7 @@ def checkpoint_capability(path):
         m=x.get("market","?")
         counts[m]=counts.get(m,0)+1
         if m=="BTC-EUR":
-            required=("mono_ns","utc_ns","nonce","bids","asks")
+            required=("boot_id","mono_ns","utc_ns","nonce","bids","asks","covered_through_recv_mono_ns","snapshot_recv_mono_ns","collector_version")
             if not all(k in x for k in required):
                 raise SystemExit(f'Checkpoint capability failure {path}:{lineno}: missing required fields')
             if not x["bids"] or not x["asks"]:
@@ -40,11 +40,11 @@ def load_jsonl(path):
 def main():
     ap=argparse.ArgumentParser(description='Freeze an immutable M1A dataset at a pre-analysis UTC cutoff.')
     ap.add_argument('--source',required=True); ap.add_argument('--output',required=True)
-    ap.add_argument('--cutoff-utc-ns',type=int,default=None); ap.add_argument('--m0-version',required=True)
+    ap.add_argument('--cutoff-utc-ns',type=int,required=True); ap.add_argument('--m0-version',required=True)
     a=ap.parse_args(); src=Path(a.source).resolve(); out=Path(a.output).resolve()
     if a.m0_version != M0_VERSION:
         raise SystemExit(f'Refusing M0 version {a.m0_version!r}; exact required version is {M0_VERSION}')
-    cutoff=a.cutoff_utc_ns or time.time_ns()
+    cutoff=a.cutoff_utc_ns
     if out.exists() and any(out.iterdir()): raise SystemExit(f'Refusing non-empty output: {out}')
     for name in FILES:
         if not (src/name).exists(): raise SystemExit(f'Missing required M0 file: {src/name}')
@@ -60,6 +60,10 @@ def main():
                 except Exception as e: raise SystemExit(f'Invalid JSON {ip}:{lineno}: {e}')
                 ts=x.get('recv_utc_ns',x.get('utc_ns'))
                 if ts is None: raise SystemExit(f'Missing receive UTC timestamp {ip}:{lineno}')
+                if x.get('collector_version') != M0_VERSION:
+                    raise SystemExit(f'Collector version mismatch {ip}:{lineno}: {x.get("collector_version")!r}')
+                if not x.get('boot_id'):
+                    raise SystemExit(f'Missing boot_id {ip}:{lineno}')
                 if int(ts) < cutoff:
                     fo.write(canon(x)+'\n'); n+=1
                     first_ts=int(ts) if first_ts is None else min(first_ts,int(ts)); last_ts=int(ts) if last_ts is None else max(last_ts,int(ts))
@@ -68,7 +72,7 @@ def main():
       'schema':'m1a-freeze-v1','freeze_id':FREEZE_ID,'research_cutoff_utc_ns':cutoff,
       'research_cutoff_utc':time.strftime('%Y-%m-%dT%H:%M:%S',time.gmtime(cutoff//1_000_000_000))+f'.{cutoff%1_000_000_000:09d}Z',
       'source':str(src),'files':{n:{'records':counts[n],'sha256':hashes[n],'first_utc_ns':bounds[n][0],'last_utc_ns':bounds[n][1]} for n in FILES},
-      'freeze_tool_version':'1.1.0','m0_version':a.m0_version,
+      'freeze_tool_version':'1.2.0','m0_version':a.m0_version,
       'm0_capability':CAPABILITY,'checkpoint_capability_verified':True,'checkpoint_counts':checkpoint_counts
     }
     (out/'freeze_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n',encoding='utf-8')
