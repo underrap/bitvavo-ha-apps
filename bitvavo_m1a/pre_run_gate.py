@@ -6,9 +6,9 @@ from pathlib import Path
 
 PROTOCOL="M1A-PREREG-v1.3"
 CONTENT_PROTOCOL="M1A-PREREG-v1.2"
-EXECUTOR_VERSION="1.2.1"
-FREEZE_ID="M1A_FREEZE_001"
-M0_VERSION="1.0.5"
+EXECUTOR_VERSION="1.2.2"
+FREEZE_ID="M1A_FREEZE_002"
+M0_VERSION="1.0.6"
 REQUIRED=("raw_events.jsonl","sessions.jsonl","book_checkpoints.jsonl")
 SHA_RE=re.compile(r"^[0-9a-f]{40}$")
 
@@ -74,7 +74,7 @@ def main():
         fail(f"freeze manifest freeze_id={mf.get('freeze_id')!r}; expected {FREEZE_ID!r}")
     if mf.get("m0_version")!=M0_VERSION:
         fail(f"freeze manifest m0_version={mf.get('m0_version')!r}; expected {M0_VERSION!r}")
-    if mf.get("m0_capability")!="persisted_reconstructed_book_checkpoints_v1" or mf.get("checkpoint_capability_verified") is not True:
+    if mf.get("m0_capability")!="persisted_reconstructed_book_checkpoints_v2" or mf.get("checkpoint_capability_verified") is not True:
         fail("freeze manifest does not prove required persisted reconstructed-book checkpoint capability")
     if mf.get("research_cutoff_utc")!=prov.get("research_cutoff_utc"):
         fail("research_cutoff_utc mismatch between provenance and freeze manifest")
