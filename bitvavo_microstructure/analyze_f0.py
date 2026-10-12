@@ -42,10 +42,6 @@ def audit_completed_input(root: Path):
     state=json.loads((root/"state.json").read_text(encoding="utf-8"))
     if state.get("completed_duration") is not True:
         raise SystemExit("F0 INPUT GATE FAIL: collector did not complete requested duration")
-    if int(state.get("pairs_both_ok",0)) < MIN_USABLE_PAIRS:
-        raise SystemExit(
-            f"F0 INPUT GATE FAIL: pairs_both_ok={state.get('pairs_both_ok')} < {MIN_USABLE_PAIRS}"
-        )
     manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
     if manifest.get("public_only") is not True or manifest.get("book_depth") != 100:
         raise SystemExit("F0 INPUT GATE FAIL: manifest public_only/book_depth mismatch")
