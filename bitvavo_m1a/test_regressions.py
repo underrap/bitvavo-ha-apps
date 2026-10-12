@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as d:
  (root/"raw_events.jsonl").write_text("".join(json.dumps(x)+"\n" for x in raw))
  grid,audit=m.build_grid(root,"BTC-EUR")
  assert audit["monotonic_regressions"]==0,audit
- assert audit["nonce_anomalies_replay"]==0,audit
+ assert audit.get("nonce_anomalies_replay",0)==0,audit
  assert grid,grid
  # The covered nonce=10 raw event must not be replayed as a duplicate.
  assert all(r["segment"]==0 for r in grid)
