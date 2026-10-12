@@ -1,0 +1,17 @@
+name: M0 collector tests
+on:
+  push:
+    paths:
+      - 'bitvavo_event_m0/**'
+      - '.github/workflows/m0-tests.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m py_compile bitvavo_event_m0/collect_event_m0.py bitvavo_event_m0/quality_report.py
+      - run: python bitvavo_event_m0/test_m0_v106.py
