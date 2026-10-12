@@ -11,23 +11,19 @@ This plan deliberately prevents research sprawl. F0 and M1A are the only active 
 ## Current decisions
 
 - Slow Long/Flat Trend: **REJECTED**.
-- F0 execution topology: collection complete; existing frozen dataset must be analyzed once.
+- F0 execution topology: **CLOSED** — 10,081 usable paired snapshots; BTC/USDC preferred for taker-style execution with retained USDC inventory.
 - M1A FREEZE_001: **INCONCLUSIVE — measurement instrument integrity failure**, not a hypothesis FAIL.
 - Repaired M0 collector: **v1.0.6**, main commit lineage includes merge `9148df0af2b1be26cf3e78cb775d80c439a2c179`.
 - Next M1A executor: **v1.2.2 / M1A_FREEZE_002**, main merge `fbdb1d6704de34d5bd86e9b015c72908faaa86e8`.
 - No new hypothesis class or new collector before F0 and repaired M1A are decided.
 
-## Workstream A — F0: execution-market decision
+## Workstream A — F0: execution-market decision — COMPLETE
 
-Input: existing completed F0 week1 dataset.
+Completed 2026-10-12.
 
-Run the already merged F0 analyzer exactly once.
+Decision: **BTC/USDC preferred for taker-style BTC execution when USDC inventory is retained.**
 
-Output decision:
-- BTC/EUR remains preferred execution market; or
-- BTC/USDC is materially cheaper for relevant identical BTC exposure after measured spread/depth/slippage and current fees.
-
-F0 is then CLOSED. It does not create another research round.
+The observed paired round-trip cost advantage was about 35–37 bp across the tested EUR-equivalent order sizes, with the EUR 500 bootstrap CI wholly below zero. F0 is CLOSED. See `bitvavo_microstructure/F0_DECISION.md`.
 
 ## Workstream B — repaired M0 -> M1A
 
