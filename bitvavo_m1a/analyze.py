@@ -5,7 +5,7 @@ import argparse, bisect, hashlib, json, math, random, statistics
 from collections import Counter, deque
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 PROTOCOL = "M1A-PREREG-v1.3"
 CONTENT_PROTOCOL = "M1A-PREREG-v1.2"
 PRIMARY = "BTC-EUR"
@@ -162,50 +162,109 @@ def audit_manifest(root: Path):
             errors.append(f"hash mismatch: {name}")
     return mf, errors
 
+def monotonic_epoch_boundaries(root: Path):
+    """Return UTC boundaries where the host monotonic clock reset.
+
+    M0 persists a process-local monotonic receive clock. A Raspberry Pi reboot
+    legitimately resets that clock. sessions.jsonl is append-only and records
+    both utc_ns and mono_ns, so a mono regression with forward UTC establishes
+    a new hard causal epoch without using market outcomes.
+    """
+    boundaries=[]
+    last_mono=None
+    last_utc=None
+    for x in load_jsonl(root/"sessions.jsonl"):
+        if x.get("mono_ns") is None or x.get("utc_ns") is None:
+            continue
+        mono=int(x["mono_ns"]); utc=int(x["utc_ns"])
+        if last_mono is not None and mono < last_mono:
+            if last_utc is not None and utc <= last_utc:
+                raise RuntimeError("cannot establish monotonic restart epoch: UTC did not advance")
+            if boundaries and utc <= boundaries[-1]:
+                raise RuntimeError("non-increasing monotonic restart epoch boundary")
+            boundaries.append(utc)
+        last_mono=mono; last_utc=utc
+    return boundaries
+
+def epoch_for_utc(utc_ns, boundaries):
+    return bisect.bisect_right(boundaries, int(utc_ns))
+
 def build_grid(root: Path, market: str):
-    checkpoints = sorted(
-        (x for x in load_jsonl(root/"book_checkpoints.jsonl") if x.get("market")==market),
-        key=lambda x: int(x["mono_ns"])
-    )
+    epoch_boundaries=monotonic_epoch_boundaries(root)
+
+    checkpoints=[]
+    for x in load_jsonl(root/"book_checkpoints.jsonl"):
+        if x.get("market")!=market:
+            continue
+        cp=dict(x)
+        cp["_epoch"]=epoch_for_utc(cp["utc_ns"],epoch_boundaries)
+        checkpoints.append(cp)
+    checkpoints.sort(key=lambda x:(int(x["_epoch"]),int(x["mono_ns"])))
     if not checkpoints:
         raise RuntimeError(f"{market}: no persisted book checkpoint")
 
-    last = -1
-    regressions = 0
+    # A regression *within* an inferred boot epoch is a true integrity failure.
+    # A regression at a documented restart boundary is expected and becomes a
+    # hard causal boundary; it must never be stitched into the old clock.
+    last_by_epoch={}
+    last_global=None
+    global_regressions=0
+    within_epoch_regressions=0
     for r in load_jsonl(root/"raw_events.jsonl"):
-        t = int(r["recv_mono_ns"])
-        if last >= 0 and t < last:
-            regressions += 1
-        last = t
-    if regressions:
-        raise RuntimeError(f"monotonic receive clock regressed {regressions} times")
+        t=int(r["recv_mono_ns"])
+        epoch=epoch_for_utc(r["recv_utc_ns"],epoch_boundaries)
+        if last_global is not None and t < last_global:
+            global_regressions += 1
+        if epoch in last_by_epoch and t < last_by_epoch[epoch]:
+            within_epoch_regressions += 1
+        last_by_epoch[epoch]=t
+        last_global=t
+    if within_epoch_regressions:
+        raise RuntimeError(
+            f"monotonic receive clock regressed {within_epoch_regressions} times within inferred restart epoch"
+        )
 
-    invalid_times = sorted(
-        int(x["mono_ns"]) for x in load_jsonl(root/"sessions.jsonl")
-        if x.get("kind") in INVALID_KINDS and x.get("market") in (None, market)
-    )
+    invalid_times={}
+    for x in load_jsonl(root/"sessions.jsonl"):
+        if x.get("kind") not in INVALID_KINDS or x.get("market") not in (None,market):
+            continue
+        if x.get("mono_ns") is None or x.get("utc_ns") is None:
+            continue
+        epoch=epoch_for_utc(x["utc_ns"],epoch_boundaries)
+        invalid_times.setdefault(epoch,[]).append(int(x["mono_ns"]))
+    for vals in invalid_times.values():
+        vals.sort()
 
-    first_cp = checkpoints[0]
-    cp_i = 0
-    cp_t = int(first_cp["mono_ns"])
-    book = {"bids": dict(first_cp["bids"]), "asks": dict(first_cp["asks"]), "nonce": int(first_cp["nonce"])}
-    valid = True
-    segment = 0
-    next_cp_t = int(checkpoints[1]["mono_ns"]) if len(checkpoints)>1 else None
+    first_cp=checkpoints[0]
+    cp_i=0
+    cp_epoch=int(first_cp["_epoch"])
+    cp_t=int(first_cp["mono_ns"])
+    book={"bids":dict(first_cp["bids"]),"asks":dict(first_cp["asks"]),"nonce":int(first_cp["nonce"])}
+    valid=True
+    segment=0
 
-    def cp_valid_at(t, checkpoint_time):
-        ii = bisect.bisect_right(invalid_times, t) - 1
-        return ii < 0 or invalid_times[ii] < checkpoint_time
+    def next_cp():
+        return checkpoints[cp_i+1] if cp_i+1 < len(checkpoints) else None
 
-    # A persisted checkpoint opens a new causal segment. Trade-flow state starts empty:
-    # no TFI lookback is allowed to cross the segment boundary.
-    trades = deque()
+    def cp_valid_at(epoch,t,checkpoint_epoch,checkpoint_time):
+        if epoch != checkpoint_epoch:
+            return False
+        vals=invalid_times.get(epoch,[])
+        ii=bisect.bisect_right(vals,t)-1
+        return ii < 0 or vals[ii] < checkpoint_time
 
+    trades=deque()
+
+    first_coord=(cp_epoch,cp_t)
     def market_events():
         for r in load_jsonl(root/"raw_events.jsonl"):
             msg=r.get("raw",{})
-            if msg.get("market")==market and int(r["recv_mono_ns"])>=cp_t:
-                yield r
+            if msg.get("market")!=market:
+                continue
+            epoch=epoch_for_utc(r["recv_utc_ns"],epoch_boundaries)
+            coord=(epoch,int(r["recv_mono_ns"]))
+            if coord>=first_coord:
+                yield epoch,r
 
     events=market_events()
     try:
@@ -213,75 +272,121 @@ def build_grid(root: Path, market: str):
     except StopIteration:
         current=None
 
-    next_grid = ((cp_t + GRID_NS - 1)//GRID_NS)*GRID_NS
-    rows = []
-    audit = Counter()
-    audit["checkpoint_count"] = len(checkpoints)
+    next_grid=((cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
+    rows=[]
+    audit=Counter()
+    audit["checkpoint_count"]=len(checkpoints)
+    audit["restart_epoch_boundaries"]=len(epoch_boundaries)
+    audit["monotonic_global_regressions"]=global_regressions
+    audit["monotonic_regressions"]=within_epoch_regressions
 
-    while current is not None or next_cp_t is not None:
-        event_t = int(current["recv_mono_ns"]) if current is not None else 2**63-1
-        boundary = min(event_t, next_cp_t if next_cp_t is not None else 2**63-1)
+    def advance_checkpoint():
+        nonlocal cp_i,cp_epoch,cp_t,book,valid,segment,next_grid
+        cp_i+=1
+        cp=checkpoints[cp_i]
+        cp_epoch=int(cp["_epoch"])
+        cp_t=int(cp["mono_ns"])
+        book={"bids":dict(cp["bids"]),"asks":dict(cp["asks"]),"nonce":int(cp["nonce"])}
+        valid=True
+        segment+=1
+        trades.clear()
+        audit["tradeflow_segment_resets"]+=1
+        next_grid=((cp_t+GRID_NS-1)//GRID_NS)*GRID_NS
+
+    while current is not None or next_cp() is not None:
+        nc=next_cp()
+
+        if current is not None:
+            event_epoch=int(current[0])
+            event_t=int(current[1]["recv_mono_ns"])
+            event_coord=(event_epoch,event_t)
+        else:
+            event_epoch=None;event_t=None;event_coord=None
+
+        nc_coord=(int(nc["_epoch"]),int(nc["mono_ns"])) if nc is not None else None
+
+        # If the event stream has crossed into a later boot epoch, never bridge
+        # the old monotonic clock. Skip pre-checkpoint events or advance to the
+        # first persisted checkpoint that is causally available.
+        if current is not None and event_epoch > cp_epoch:
+            if nc_coord is not None and nc_coord <= event_coord:
+                advance_checkpoint()
+                continue
+            try:
+                current=next(events)
+            except StopIteration:
+                current=None
+            continue
+
+        # If there are no more market events but a later persisted checkpoint
+        # exists, advance to it; no rows are fabricated beyond observed events.
+        if current is None:
+            if nc is not None:
+                advance_checkpoint()
+                continue
+            break
+
+        # Same-epoch causal processing. A checkpoint is itself a hard boundary.
+        if event_epoch < cp_epoch or (event_epoch==cp_epoch and event_t < cp_t):
+            try:
+                current=next(events)
+            except StopIteration:
+                current=None
+            continue
+
+        same_epoch_nc_t=(int(nc["mono_ns"]) if nc is not None and int(nc["_epoch"])==cp_epoch else None)
+        boundary=event_t
+        if same_epoch_nc_t is not None:
+            boundary=min(boundary,same_epoch_nc_t)
 
         while next_grid < boundary:
             while trades and trades[0][0] <= next_grid-LOOKBACK_NS:
                 trades.popleft()
-            buy = sum(v for t,side,v in trades if t <= next_grid and side=="buy")
-            sell = sum(v for t,side,v in trades if t <= next_grid and side=="sell")
-            f3 = imbalance(buy, sell) if buy+sell>0 else 0.0
+            buy=sum(v for t,side,v in trades if t<=next_grid and side=="buy")
+            sell=sum(v for t,side,v in trades if t<=next_grid and side=="sell")
+            f3=imbalance(buy,sell) if buy+sell>0 else 0.0
             if buy+sell==0:
-                audit["zero_tradeflow_grids"] += 1
+                audit["zero_tradeflow_grids"]+=1
 
-            met = book_metrics(book["bids"], book["asks"]) if valid and cp_valid_at(next_grid, cp_t) else None
+            met=book_metrics(book["bids"],book["asks"]) if valid and cp_valid_at(cp_epoch,next_grid,cp_epoch,cp_t) else None
             if met is None:
-                audit["invalid_grids"] += 1
-                rows.append({"t":next_grid,"segment":segment,"valid":False,"bid":None,"ask":None,"mid":None,
-                             "f1":None,"f2":None,"f3":f3})
+                audit["invalid_grids"]+=1
+                rows.append({"t":next_grid,"epoch":cp_epoch,"segment":segment,"valid":False,
+                             "bid":None,"ask":None,"mid":None,"f1":None,"f2":None,"f3":f3})
             else:
-                rows.append({"t":next_grid,"segment":segment,"valid":True,**met,"f3":f3})
-                audit["valid_grids"] += 1
-            next_grid += GRID_NS
+                rows.append({"t":next_grid,"epoch":cp_epoch,"segment":segment,"valid":True,**met,"f3":f3})
+                audit["valid_grids"]+=1
+            next_grid+=GRID_NS
 
-        if next_cp_t is not None and next_cp_t <= event_t:
-            cp_i += 1
-            cp = checkpoints[cp_i]
-            cp_t = int(cp["mono_ns"])
-            book = {"bids":dict(cp["bids"]), "asks":dict(cp["asks"]), "nonce":int(cp["nonce"])}
-            valid = True
-            segment += 1
-            # Hard segment boundary: TFI may use only trades received after this checkpoint.
-            trades.clear()
-            audit["tradeflow_segment_resets"] += 1
-            next_cp_t = int(checkpoints[cp_i+1]["mono_ns"]) if cp_i+1 < len(checkpoints) else None
+        if same_epoch_nc_t is not None and same_epoch_nc_t <= event_t:
+            advance_checkpoint()
             continue
 
-        if current is None:
-            break
-
-        msg = current["raw"]
-        t = int(current["recv_mono_ns"])
+        msg=current[1]["raw"]
+        t=event_t
         if msg.get("event")=="trade":
             try:
                 trades.append((t,msg["side"],float(msg["amount"])))
-                audit["trade_events"] += 1
+                audit["trade_events"]+=1
             except Exception:
-                audit["malformed_trades"] += 1
+                audit["malformed_trades"]+=1
         elif msg.get("event")=="book":
-            n = int(msg["nonce"])
-            if valid and n == int(book["nonce"])+1:
+            n=int(msg["nonce"])
+            if valid and n==int(book["nonce"])+1:
                 apply_book(book,msg)
-                audit["book_updates"] += 1
+                audit["book_updates"]+=1
             elif valid:
-                valid = False
-                audit["nonce_anomalies_replay"] += 1
+                valid=False
+                audit["nonce_anomalies_replay"]+=1
 
         try:
             current=next(events)
         except StopIteration:
             current=None
 
-    audit["grid_points"] = len(rows)
-    audit["monotonic_regressions"] = regressions
-    return rows, dict(audit)
+    audit["grid_points"]=len(rows)
+    audit["epochs_with_rows"]=len({r["epoch"] for r in rows})
+    return rows,dict(audit)
 
 def row_target(rows, i, h_ns):
     step = h_ns // GRID_NS
@@ -324,19 +429,19 @@ def rows_for(rows, indices, feature, h_ns):
     return out
 
 def split_primary(rows):
-    eligible = primary_eligible(rows)
-    nd = math.floor(0.60 * len(eligible))
-    discovery = eligible[:nd]
-    holdout = eligible[nd:]
-    boundary_t = rows[holdout[0]]["t"] if holdout else None
-    return eligible, discovery, holdout, boundary_t
+    eligible=primary_eligible(rows)
+    nd=math.floor(0.60*len(eligible))
+    discovery=eligible[:nd]
+    holdout=eligible[nd:]
+    boundary_i=holdout[0] if holdout else None
+    return eligible,discovery,holdout,boundary_i
 
-def indices_by_boundary(rows, boundary_t, part):
-    if boundary_t is None:
+def indices_by_boundary(rows,boundary_i,part):
+    if boundary_i is None:
         return []
     if part=="discovery":
-        return [i for i,r in enumerate(rows) if r["t"] < boundary_t]
-    return [i for i,r in enumerate(rows) if r["t"] >= boundary_t]
+        return list(range(0,boundary_i))
+    return list(range(boundary_i,len(rows)))
 
 def full_60s_blocks(primary_holdout_rows):
     if not primary_holdout_rows:
@@ -422,7 +527,7 @@ def feature_summary(rows4):
             "rho":spearman([r[2] for r in rows4],[r[3] for r in rows4]) if len(rows4)>=2 else None}
 
 def analyze_market(rows, market):
-    eligible, disc_primary, hold_primary, boundary_t=split_primary(rows)
+    eligible, disc_primary, hold_primary, boundary_i=split_primary(rows)
     features={"f1":"L1_imbalance","f2":"D5_imbalance","f3":"TFI_1s"}
     q={}
     for f in features:
@@ -434,14 +539,16 @@ def analyze_market(rows, market):
         "primary_eligible_n":len(eligible),
         "discovery_n":len(disc_primary),
         "holdout_n":len(hold_primary),
-        "holdout_boundary_mono_ns":boundary_t,
+        "holdout_boundary_mono_ns":rows[boundary_i]["t"] if boundary_i is not None else None,
+        "holdout_boundary_epoch":rows[boundary_i].get("epoch") if boundary_i is not None else None,
+        "holdout_boundary_row_index":boundary_i,
         "discovery_period_mono_ns":[rows[disc_primary[0]]["t"],rows[disc_primary[-1]]["t"]] if disc_primary else [None,None],
         "holdout_period_mono_ns":[rows[hold_primary[0]]["t"],rows[hold_primary[-1]]["t"]] if hold_primary else [None,None],
         "quantiles_from_discovery":q,
         "feature_horizon":{}
     }
-    d_idx=indices_by_boundary(rows,boundary_t,"discovery")
-    h_idx=indices_by_boundary(rows,boundary_t,"holdout")
+    d_idx=indices_by_boundary(rows,boundary_i,"discovery")
+    h_idx=indices_by_boundary(rows,boundary_i,"holdout")
     for f,label in features.items():
         result["feature_horizon"][label]={}
         for h in HORIZONS_NS:

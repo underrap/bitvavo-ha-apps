@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory() as d:
                       text=True,capture_output=True)
     assert cp.returncode==0,cp.stderr+cp.stdout
     x=json.loads((out/'results.json').read_text())
-    assert x['executor_version']=='1.2.0'
+    assert x['executor_version']=='1.2.1'
     assert x['protocol']=='M1A-PREREG-v1.3'
     assert x['content_protocol']=='M1A-PREREG-v1.2'
     assert x['audit']['BTC-EUR']['monotonic_regressions']==0
