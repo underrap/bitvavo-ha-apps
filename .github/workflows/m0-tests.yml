@@ -13,5 +13,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m py_compile bitvavo_event_m0/collect_event_m0.py bitvavo_event_m0/quality_report.py
+      - run: python -m py_compile bitvavo_event_m0/collect_event_m0.py bitvavo_event_m0/quality_report.py bitvavo_event_m0/readiness.py
       - run: python bitvavo_event_m0/test_m0_v106.py
+      - run: python bitvavo_event_m0/test_readiness.py
