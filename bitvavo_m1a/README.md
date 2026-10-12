@@ -6,7 +6,7 @@ Research-only executor for **M1A-PREREG-v1.3**. It never authenticates to Bitvav
 
 `FROZEN-SPEC / EXECUTION BLOCKED`
 
-The executor implementation is complete on the dedicated branch, but real M1A market data must not be analyzed until the exact execution commit and `M1A_FREEZE_001` provenance are pinned and the pre-run gate passes.
+The executor implementation is complete on the dedicated branch, but real M1A market data must not be analyzed until the exact execution commit and `M1A_FREEZE_002` provenance are pinned and the pre-run gate passes.
 
 ## Frozen research design
 
@@ -31,7 +31,9 @@ Causal rules:
 - reconnect/restart/book invalidation is a hard segment boundary
 - TFI state is reset at every persisted checkpoint / hard segment boundary
 - any target crossing an invalid grid point or segment boundary is excluded
-- M0 1.0.5 persisted reconstructed-book checkpoints are required
+- M0 1.0.6 persisted reconstructed-book checkpoints are required
+- every checkpoint must carry an explicit `boot_id` and `covered_through_recv_mono_ns`
+- checkpoint replay starts strictly after that causal coverage watermark; checkpoint write time is never used as a replay cutoff
 
 Discovery/Holdout:
 - primary-eligible BTC-EUR observations
@@ -62,19 +64,19 @@ Minimum-data failure yields `INCONCLUSIVE`, never PASS/FAIL.
 
 The Home Assistant app does **not** create a new freeze at startup. It analyzes only the already prepared:
 
-`/homeassistant/bitvavo_research/m1a/M1A_FREEZE_001/frozen`
+`/homeassistant/bitvavo_research/m1a/M1A_FREEZE_002/frozen`
 
 and requires:
 
-`/homeassistant/bitvavo_research/m1a/M1A_FREEZE_001/execution_provenance.json`
+`/homeassistant/bitvavo_research/m1a/M1A_FREEZE_002/execution_provenance.json`
 
 The runner hard-stops unless:
 - the mandatory Home Assistant app option `execution_commit_sha` is set to the pinned 40-character execution SHA;
 - that configured SHA equals `execution_commit_sha` in the provenance record;
 - protocol = `M1A-PREREG-v1.3`;
-- executor version = `1.2.0`;
-- freeze id = `M1A_FREEZE_001`;
-- M0 version = `1.0.5`;
+- executor version = `1.2.2`;
+- freeze id = `M1A_FREEZE_002`;
+- M0 version = `1.0.6`;
 - protocol conformance status = `PASS`;
 - freeze manifest SHA-256 matches;
 - every frozen raw file SHA-256 matches the manifest and provenance record;
