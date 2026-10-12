@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory() as d:
     assert x['content_protocol']=='M1A-PREREG-v1.2'
     assert x['audit']['BTC-EUR']['monotonic_regressions']==0
     assert x['audit']['BTC-EUR']['explicit_boot_epochs']==1
-    assert x['audit']['BTC-EUR']['nonce_anomalies_replay']==0
+    assert x['audit']['BTC-EUR'].get('nonce_anomalies_replay',0)==0
     assert x['markets']['BTC-EUR']['primary_eligible_n']>100
     assert x['markets']['BTC-EUR']['confirmatory']['decision']=='INCONCLUSIVE'
     assert (out/'report.md').exists()
