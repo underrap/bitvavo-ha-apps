@@ -244,7 +244,7 @@ def build_grid(root: Path, market: str):
             return False
         vals=invalid_times.get(epoch,[])
         ii=bisect.bisect_right(vals,t)-1
-        return ii<0 or vals[ii] < checkpoint_time
+        return ii<0 or vals[ii] <= checkpoint_time
 
     trades=deque()
 
