@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 MIN_USABLE_PAIRS=8000
 NOTIONALS_EUR=(50,100,250,500,1000,2500,5000,10000)
 BOOTSTRAPS=10000
@@ -23,13 +23,55 @@ TAKER_USDC=0.0005
 MAKER_USDC=0.0005
 USDC_EUR_CONVERSION_FEE=0.0010
 FEE_SOURCE_URL="https://bitvavo.com/nl/fees"
-FEE_VERIFIED_DATE="2026-10-03"
+FEE_VERIFIED_DATE="2026-10-12"
+
+REQUIRED_INPUT_FILES=("paired_books.jsonl","trade_windows.jsonl","state.json","manifest.json")
+
 
 def sha256_file(p):
     h=hashlib.sha256()
     with p.open("rb") as f:
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
+
+
+def audit_completed_input(root: Path):
+    for name in REQUIRED_INPUT_FILES:
+        if not (root/name).exists():
+            raise SystemExit(f"F0 INPUT GATE FAIL: missing {name}")
+    state=json.loads((root/"state.json").read_text(encoding="utf-8"))
+    if state.get("completed_duration") is not True:
+        raise SystemExit("F0 INPUT GATE FAIL: collector did not complete requested duration")
+    manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("public_only") is not True or manifest.get("book_depth") != 100:
+        raise SystemExit("F0 INPUT GATE FAIL: manifest public_only/book_depth mismatch")
+    if manifest.get("state",{}).get("completed_duration") is not True:
+        raise SystemExit("F0 INPUT GATE FAIL: manifest state not complete")
+    mf=manifest.get("files",{})
+    checked={}
+    for name in ("paired_books.jsonl","trade_windows.jsonl","state.json"):
+        meta=mf.get(name)
+        if not isinstance(meta,dict):
+            raise SystemExit(f"F0 INPUT GATE FAIL: manifest entry missing for {name}")
+        p=root/name
+        actual_sha=sha256_file(p)
+        actual_bytes=p.stat().st_size
+        if actual_sha != meta.get("sha256"):
+            raise SystemExit(f"F0 INPUT GATE FAIL: SHA-256 mismatch for {name}")
+        if actual_bytes != int(meta.get("bytes",-1)):
+            raise SystemExit(f"F0 INPUT GATE FAIL: byte-size mismatch for {name}")
+        checked[name]={"sha256":actual_sha,"bytes":actual_bytes}
+    failures=root/"failures.jsonl"
+    if failures.exists():
+        meta=mf.get("failures.jsonl")
+        if not isinstance(meta,dict):
+            raise SystemExit("F0 INPUT GATE FAIL: failures.jsonl exists without manifest entry")
+        actual_sha=sha256_file(failures)
+        actual_bytes=failures.stat().st_size
+        if actual_sha != meta.get("sha256") or actual_bytes != int(meta.get("bytes",-1)):
+            raise SystemExit("F0 INPUT GATE FAIL: failures.jsonl manifest mismatch")
+        checked["failures.jsonl"]={"sha256":actual_sha,"bytes":actual_bytes}
+    return {"state":state,"manifest":manifest,"checked_files":checked}
 
 def load_jsonl(p):
     with p.open(encoding="utf-8") as f:
@@ -277,9 +319,12 @@ def main():
     ap.add_argument("--input",required=True)
     ap.add_argument("--output",required=True)
     a=ap.parse_args()
-    root=Path(a.input).resolve(); out=Path(a.output).resolve(); out.mkdir(parents=True,exist_ok=True)
+    root=Path(a.input).resolve(); out=Path(a.output).resolve()
+    if out.exists() and any(out.iterdir()):
+        raise SystemExit(f"F0 OUTPUT GATE FAIL: refusing non-empty output directory {out}")
+    gate=audit_completed_input(root)
+    out.mkdir(parents=True,exist_ok=True)
     books=root/"paired_books.jsonl"
-    if not books.exists():raise SystemExit(f"missing {books}")
     rows=[];excluded=defaultdict(int);attempted=0
     for rec in load_jsonl(books):
         attempted+=1;r,reason=analyze_pair(rec)
@@ -289,7 +334,12 @@ def main():
     summary["input"]={
         "root":str(root),"paired_books_sha256":sha256_file(books),
         "attempted_pairs":attempted,"excluded":dict(sorted(excluded.items())),
-        "trade_windows":audit_trades(root/"trade_windows.jsonl")
+        "trade_windows":audit_trades(root/"trade_windows.jsonl"),
+        "input_gate":"PASS",
+        "collector_completed":gate["state"].get("completed_duration"),
+        "pairs_both_ok_manifest":gate["state"].get("pairs_both_ok"),
+        "manifest_sha256":sha256_file(root/"manifest.json"),
+        "checked_files":gate["checked_files"]
     }
     (out/"f0_results.json").write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n",encoding="utf-8")
     report=[

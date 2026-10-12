@@ -1,0 +1,12 @@
+name: "Bitvavo F0 Execution Analyzer"
+version: "1.1.0"
+slug: "bitvavo_f0_analyzer"
+description: "One-shot analysis of the completed BTC/EUR vs BTC/USDC F0 dataset; no trading"
+arch:
+  - aarch64
+startup: once
+boot: manual_only
+init: false
+map:
+  - type: homeassistant_config
+    read_only: false
