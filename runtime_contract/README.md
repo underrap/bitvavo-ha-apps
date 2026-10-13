@@ -27,7 +27,8 @@ Before LIVE writes are allowed, all of these must be true:
 - kill-switch behavior has passed its deterministic test;
 - authenticated order/fill stream tracking is operational;
 - periodic/continuous reconciliation of live order/balance state is operational as a fallback to the stream;
-- if the strategy can leave limit/trigger orders resting on Bitvavo, Cancel on disconnect is configured and its heartbeat path is tested.
+- if the strategy can leave limit/trigger orders resting on Bitvavo, Cancel on disconnect is configured and its heartbeat path is tested;
+- when execution uses a non-owner quote currency (currently BTC/USDC with EUR owner reporting), treasury balances are reconciled, an explicit owner-currency FX valuation is loaded, and the funding/inventory policy is configured.
 
 Unknown/missing state means **fail closed**.
 
@@ -122,3 +123,17 @@ When the local bot source is available, the first production hardening pass shou
 - dashboard: surface blocked/recovering/paused state without mixing it with strategy signals.
 
 No Smart strategy should gain LIVE permission merely because this contract exists.
+
+## BTC/USDC execution with EUR owner reporting
+
+F0 closed with BTC/USDC preferred for taker-style execution under retained USDC inventory.
+This does not permit LIVE to silently reinterpret the bot as a USDC-accounted product.
+
+When the execution quote differs from the owner reporting currency, LIVE stays in
+`RECOVERING` until all three cross-quote gates pass:
+
+1. EUR/USDC/BTC treasury balances reconcile to exchange state;
+2. the USDC/EUR owner valuation rate is available and valid;
+3. a funding policy explicitly defines how USDC working inventory is created/replenished.
+
+A missing cross-quote input is therefore a safety blocker, not a dashboard-only concern.

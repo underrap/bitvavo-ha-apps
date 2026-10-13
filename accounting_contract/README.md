@@ -30,9 +30,13 @@ production bot before LIVE is enabled.
 
 For a EUR-funded BTC spot bot:
 
-`current bot value = accounted quote cash + BTC position × mark price`
+`current bot value = sum(all asset balances × explicit EUR valuation rate)`
 
 `owner total result = current bot value + cumulative withdrawals - cumulative deposits`
+
+For BTC/USDC execution, **USDC must never be treated as EUR at parity**. The owner-facing
+valuation therefore requires an explicit USDC/EUR rate, and BTC/EUR may be derived as
+`BTC/USDC × USDC/EUR` when that is the chosen valuation path.
 
 This prevents deposits from masquerading as profit and withdrawals from masquerading
 as losses.
@@ -59,3 +63,15 @@ Verified 2026-10-03 against:
 - https://docs.bitvavo.com/docs/websocket-api/get-account-balance/
 
 The production source of truth remains the local Bitvavo Trading Bot workspace.
+
+## Cross-quote execution boundary
+
+F0 selected BTC/USDC as the preferred future taker-style execution market when USDC inventory
+is retained. That creates a deliberate separation:
+
+- execution accounting may be denominated in USDC;
+- owner reporting remains denominated in EUR;
+- EUR, USDC and BTC balances must all be valued explicitly for owner-facing bot value;
+- missing USDC/EUR valuation is a hard error, not permission to assume 1 USDC = 1 EUR;
+- treasury conversion costs belong to funding/treasury accounting and must not disappear inside
+  BTC trade P/L.

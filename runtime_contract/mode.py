@@ -46,6 +46,10 @@ class LiveGate:
     cancel_on_disconnect_ready: bool
     private_order_stream_ready: bool
     continuous_reconciliation_ready: bool
+    cross_quote_execution: bool
+    treasury_reconciled: bool
+    owner_fx_rate_loaded: bool
+    funding_policy_configured: bool
 
     def failures(self) -> list[str]:
         checks={
@@ -67,6 +71,15 @@ class LiveGate:
             "kill_switch_tested":self.kill_switch_tested,
             "private_order_stream_ready":self.private_order_stream_ready,
             "continuous_reconciliation_ready":self.continuous_reconciliation_ready,
+            "treasury_reconciled":(
+                self.treasury_reconciled if self.cross_quote_execution else True
+            ),
+            "owner_fx_rate_loaded":(
+                self.owner_fx_rate_loaded if self.cross_quote_execution else True
+            ),
+            "funding_policy_configured":(
+                self.funding_policy_configured if self.cross_quote_execution else True
+            ),
             "cancel_on_disconnect_ready":(
                 self.cancel_on_disconnect_ready if self.resting_orders_possible else True
             ),

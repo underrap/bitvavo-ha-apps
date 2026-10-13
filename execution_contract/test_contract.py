@@ -109,3 +109,27 @@ assert not live_key_permissions_ok(read_only=True,trade=True,withdraw=True)
 assert not live_key_permissions_ok(read_only=True,trade=False,withdraw=False)
 
 print("Execution safety contract PASS")
+
+
+# F0 selected BTC-USDC for future taker-style execution. The execution ledger
+# must remain quote-asset agnostic and preserve actual USDC fees.
+usdc_rules=MarketRules.from_api({
+    "market":"BTC-USDC","status":"trading",
+    "minOrderInBaseAsset":"0.0001","minOrderInQuoteAsset":"5",
+    "maxOrderInBaseAsset":"100","maxOrderInQuoteAsset":"1000000",
+    "quantityDecimals":8,"notionalDecimals":2,"tickSize":"0.01","maxOpenOrders":100
+})
+usdc_rules.validate_new_order(amount_quote=Decimal("50.00"))
+uo=OrderLedger("BTC-USDC",uid(),42)
+uoid=uid()
+uo.apply_order_event({
+    "market":"BTC-USDC","clientOrderId":uo.client_order_id,"orderId":uoid,
+    "operatorId":42,"status":"new","side":"buy","orderType":"market",
+    "amount":"0.001","amountRemaining":"0.001","filledAmount":"0",
+    "filledAmountQuote":"0","updatedNs":1
+})
+ufill={"market":"BTC-USDC","clientOrderId":uo.client_order_id,"orderId":uoid,
+       "fillId":uid(),"timestamp":1,"amount":"0.001","price":"74000",
+       "taker":True,"fee":"0.037","feeCurrency":"USDC"}
+assert uo.apply_fill_event(ufill)
+assert uo.fees_by_currency["USDC"]==Decimal("0.037")
