@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 BASE=Path(__file__).parent
 sys.path.insert(0,str(BASE))
-from accounting import SpotAccounting,FillInput,reconcile_balances
+from accounting import SpotAccounting,FillInput,reconcile_balances,value_portfolio_in_owner_currency,cross_price_in_owner
 
 a=SpotAccounting()
 a.deposit_quote("500")
@@ -73,3 +73,31 @@ r2=reconcile_balances(
 assert not r2["ok"]
 
 print("Accounting safety contract PASS")
+
+
+# BTC/USDC execution must never be reported as if USDC == EUR.
+btc_eur=cross_price_in_owner(base_price_in_quote="74200",quote_price_in_owner="0.998")
+assert btc_eur==Decimal("74051.600")
+
+portfolio=value_portfolio_in_owner_currency(
+    balances={"EUR":"100","USDC":"250","BTC":"0.002"},
+    prices_in_owner={"USDC":"0.998","BTC":btc_eur},
+    owner_currency="EUR",
+    deposits_owner="500",
+    withdrawals_owner="0",
+)
+expected=Decimal("100")+Decimal("250")*Decimal("0.998")+Decimal("0.002")*btc_eur
+assert portfolio["current_bot_value_owner"]==expected
+assert portfolio["owner_total_result"]==expected-Decimal("500")
+assert portfolio["assets"]["USDC"]["price_in_owner"]==Decimal("0.998")
+
+try:
+    value_portfolio_in_owner_currency(
+        balances={"EUR":"100","USDC":"250"},
+        prices_in_owner={},
+        owner_currency="EUR",
+        deposits_owner="350",
+    )
+    raise AssertionError("missing USDC/EUR valuation accepted")
+except ValueError:
+    pass
