@@ -154,3 +154,62 @@ def reconcile_balances(*, accounted_quote: Any, accounted_base: Any,
         "exchange_quote_total":eq,
         "exchange_base_total":eb,
     }
+
+
+def value_portfolio_in_owner_currency(*, balances: dict[str,Any],
+                                      prices_in_owner: dict[str,Any],
+                                      owner_currency: str="EUR",
+                                      deposits_owner: Any="0",
+                                      withdrawals_owner: Any="0") -> dict[str,Any]:
+    """Value a multi-asset spot portfolio in the owner's reporting currency.
+
+    This is deliberately separate from per-market fill accounting. It prevents
+    BTC/USDC execution from silently treating USDC as EUR. Every non-owner asset
+    requires an explicit positive owner-currency valuation rate.
+
+    Example: for owner_currency='EUR', prices_in_owner may contain
+    {'USDC': 0.9987, 'BTC': 74250}. The EUR balance itself is valued at 1.
+    """
+    owner=str(owner_currency)
+    if not owner:
+        raise ValueError("owner_currency required")
+
+    dep=D(deposits_owner); wd=D(withdrawals_owner)
+    if dep<0 or wd<0:
+        raise ValueError("owner deposits/withdrawals cannot be negative")
+
+    values={}
+    total=Decimal("0")
+    for asset,raw_balance in balances.items():
+        asset=str(asset)
+        bal=D(raw_balance)
+        if bal<0:
+            raise ValueError(f"negative spot balance for {asset}")
+        if asset==owner:
+            px=Decimal("1")
+        else:
+            if asset not in prices_in_owner:
+                raise ValueError(f"missing {asset}/{owner} valuation rate")
+            px=D(prices_in_owner[asset])
+            if px<=0:
+                raise ValueError(f"invalid {asset}/{owner} valuation rate")
+        val=bal*px
+        values[asset]={"balance":bal,"price_in_owner":px,"value_in_owner":val}
+        total+=val
+
+    return {
+        "owner_currency":owner,
+        "assets":values,
+        "current_bot_value_owner":total,
+        "deposited_owner":dep,
+        "withdrawn_owner":wd,
+        "owner_total_result":total+wd-dep,
+    }
+
+
+def cross_price_in_owner(*, base_price_in_quote: Any, quote_price_in_owner: Any) -> Decimal:
+    """Derive base/owner from base/quote × quote/owner without assuming parity."""
+    bq=D(base_price_in_quote); qo=D(quote_price_in_owner)
+    if bq<=0 or qo<=0:
+        raise ValueError("cross-price inputs must be positive")
+    return bq*qo
