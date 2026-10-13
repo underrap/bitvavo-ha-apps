@@ -14,6 +14,8 @@ def good_gate(**overrides):
         order_cap_configured=True,kill_switch_tested=True,
         resting_orders_possible=True,cancel_on_disconnect_ready=True,
         private_order_stream_ready=True,continuous_reconciliation_ready=True,
+        cross_quote_execution=False,treasury_reconciled=False,
+        owner_fx_rate_loaded=False,funding_policy_configured=False,
     )
     d.update(overrides)
     return LiveGate(**d)
@@ -63,3 +65,34 @@ for a in Action:
     else: assert not action_allowed(RuntimeState.RECOVERING,a)
 
 print("Runtime LIVE-safety contract PASS")
+
+
+# BTC-USDC execution with EUR owner reporting is cross-quote. LIVE must remain
+# blocked until treasury balances, owner FX valuation and funding policy are explicit.
+cross=good_gate(
+    cross_quote_execution=True,
+    treasury_reconciled=True,
+    owner_fx_rate_loaded=True,
+    funding_policy_configured=True,
+)
+assert cross.ready
+
+for field in ("treasury_reconciled","owner_fx_rate_loaded","funding_policy_configured"):
+    bad=good_gate(
+        cross_quote_execution=True,
+        treasury_reconciled=True,
+        owner_fx_rate_loaded=True,
+        funding_policy_configured=True,
+        **{field:False},
+    )
+    assert not bad.ready,(field,bad.failures())
+    assert field in bad.failures()
+    assert startup_state(bad,configured_mode="LIVE")==RuntimeState.RECOVERING
+
+# EUR-quoted execution does not require the cross-quote treasury gates.
+assert good_gate(
+    cross_quote_execution=False,
+    treasury_reconciled=False,
+    owner_fx_rate_loaded=False,
+    funding_policy_configured=False,
+).ready
