@@ -77,6 +77,8 @@ Do not derive realized P/L from requested amount, target price or configured fee
 Reference:
 `accounting_contract/`.
 
+For BTC/USDC execution, keep owner reporting in EUR. Never assume USDC parity with EUR; load an explicit USDC/EUR valuation rate and value EUR, USDC and BTC separately.
+
 ### 5. Restart/reconnect reconciliation gate
 
 On process start or authenticated-stream reconnect:
@@ -92,7 +94,23 @@ On process start or authenticated-stream reconnect:
 Reference:
 `runtime_contract/`.
 
-### 6. PAPER/LIVE isolation
+### 6. Treasury / retained-USDC inventory
+
+F0 closed with BTC/USDC preferred for taker-style execution when USDC working inventory is retained.
+
+Production must therefore:
+- keep EUR<->USDC funding separate from BTC strategy trade cycles;
+- configure explicit USDC min/target/max working inventory;
+- configure a max EUR notional per treasury conversion;
+- count available + inOrder + pending funding when deciding whether more USDC is needed;
+- never auto-convert around every BTC entry/exit;
+- keep conversion fees/costs separate from BTC strategy realized P/L;
+- block LIVE cross-quote execution until treasury balances reconcile and USDC/EUR valuation is available.
+
+Reference:
+`treasury_contract/`.
+
+### 7. PAPER/LIVE isolation
 
 PAPER must never share the authenticated create/update/cancel write path.
 
@@ -104,7 +122,7 @@ Database provenance must distinguish at least:
 
 A mode switch must not reinterpret prior simulated fills as real exchange fills.
 
-### 7. LIVE gate
+### 8. LIVE gate
 
 LIVE remains disabled until deterministic tests prove:
 
@@ -125,7 +143,7 @@ LIVE remains disabled until deterministic tests prove:
 
 No strategy result alone enables LIVE.
 
-### 8. Pause / kill switch
+### 9. Pause / kill switch
 
 Implement these semantics explicitly:
 
@@ -143,7 +161,7 @@ Implement these semantics explicitly:
 
 If resting limit/trigger orders are possible, evaluate Bitvavo `cancelOrdersAfter` / `codGroupId` and heartbeat handling.
 
-### 9. Dashboard
+### 10. Dashboard
 
 Keep the homepage owner/result focused.
 
@@ -180,10 +198,39 @@ Before LIVE review, production tests must prove at least:
 15. PAPER path cannot invoke authenticated order writes;
 16. pause blocks entry while still permitting risk reduction;
 17. safe halt does not silently liquidate;
-18. resting-order strategy loses LIVE readiness if Cancel on disconnect is required but unavailable/unverified.
+18. resting-order strategy loses LIVE readiness if Cancel on disconnect is required but unavailable/unverified;
+19. BTC/USDC LIVE blocks when USDC/EUR owner valuation is missing;
+20. BTC/USDC LIVE blocks when treasury balances do not reconcile;
+21. strategy trade-cycle code cannot invoke EUR<->USDC treasury conversion;
+22. retained USDC within configured band causes no conversion;
+23. USDC below configured minimum requests at most the configured funding cap;
+24. treasury conversion fees remain separate from BTC strategy realized P/L.
 
 ## Stop condition
 
 This hardening pass is complete when the existing bot passes the above tests with its real SQLite migration/restart paths **without changing strategy logic**.
 
 After that, wait for research evidence before creating or enabling any new Smart strategy implementation.
+
+
+## Single-pass Work acceptance package
+
+When the production workspace is handed to Work, do the implementation in one batch rather than iterating between chat and Work.
+
+Work should inspect and modify the actual local source of truth, then return only after all applicable acceptance checks pass:
+
+1. inventory current schema and create a verified backup;
+2. implement the migration and durable intent/fill persistence;
+3. wire restart/reconnect reconciliation and PAPER/LIVE isolation;
+4. add BTC/USDC execution + EUR owner reporting + treasury policy;
+5. preserve existing strategy behavior;
+6. run the production test suite plus mirrored cases from:
+   - `execution_contract/`
+   - `accounting_contract/`
+   - `runtime_contract/`
+   - `treasury_contract/`
+7. prove migration idempotence on a copy of the real SQLite database;
+8. prove historic realized P/L and owner cash-flow totals are unchanged;
+9. deliver one patched production package plus one concise test/migration report.
+
+Do not use Work to invent the Smart strategy. Strategy integration starts only after research produces an accepted candidate.
