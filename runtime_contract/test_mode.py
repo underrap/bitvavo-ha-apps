@@ -78,13 +78,14 @@ cross=good_gate(
 assert cross.ready
 
 for field in ("treasury_reconciled","owner_fx_rate_loaded","funding_policy_configured"):
-    bad=good_gate(
+    kwargs=dict(
         cross_quote_execution=True,
         treasury_reconciled=True,
         owner_fx_rate_loaded=True,
         funding_policy_configured=True,
-        **{field:False},
     )
+    kwargs[field]=False
+    bad=good_gate(**kwargs)
     assert not bad.ready,(field,bad.failures())
     assert field in bad.failures()
     assert startup_state(bad,configured_mode="LIVE")==RuntimeState.RECOVERING
@@ -96,3 +97,5 @@ assert good_gate(
     owner_fx_rate_loaded=False,
     funding_policy_configured=False,
 ).ready
+
+print("Runtime LIVE-safety contract PASS")
